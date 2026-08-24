@@ -1,0 +1,341 @@
+datasource db {
+  provider = "postgresql"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  ADMIN
+  INSPECTOR
+  CLIENT
+}
+
+enum SlotStatus {
+  AVAILABLE
+  RESERVED
+  UNDER_CONTRACT
+  DEVELOPING
+  TITLING_PHASE
+  TURNOVER_READY
+  HANDED_OVER
+  SOLD
+}
+
+enum PaymentMethod {
+  INSTALLMENT
+  SPOT_CASH
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  OVERDUE
+}
+
+enum AccountStatus {
+  INVITED
+  ACTIVE
+  SUSPENDED
+}
+
+model User {
+  id                String        @id @default(uuid())
+  email             String        @unique
+  name              String
+  role              Role          @default(CLIENT)
+  accountStatus     AccountStatus @default(ACTIVE)
+  passwordHash      String?
+  inviteToken       String?
+  inviteTokenExpiry DateTime?
+  contact           String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  // Relationships
+  clientPackage      ClientPackage?      // One-to-one mapping for client package details
+  weeklyProgressLogs WeeklyProgressLog[] // Inspector logs created by this user
+  inspectedDefects   PunchListDefect[]   // Defects reported by inspector
+  buyerKyc           BuyerKyc?           // KYC verification checklist
+
+  @@index([inviteToken])
+  @@map("users")
+}
+
+model LandParcel {
+  id              String   @id @default(uuid())
+  name            String   // e.g., "Cavinti Highland Crest"
+  location        String
+  purchaseCost    Decimal  @db.Decimal(12, 2)
+  totalAreaSqm    Float
+  totalSlots      Int      // subdividedSlotsCount
+  acquisitionDate DateTime
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Relationships
+  slots                Slot[]
+  civilWorksMilestones CivilWorksMilestone[]
+
+  @@map("land_parcels")
+}
+
+model Slot {
+  id           String     @id @default(uuid())
+  parcelId     String
+  slotNumber   Int
+  sizeSqm      Float      // areaSqm
+  price        Decimal    @db.Decimal(12, 2) // basePrice
+  status       SlotStatus @default(AVAILABLE)
+  row          Int        // Grid Row coordinate for frontend visualization
+  col          Int        // Grid Column coordinate for frontend visualization
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  // Relationships
+  landParcel         LandParcel          @relation(fields: [parcelId], references: [id], onDelete: Cascade)
+  weeklyProgressLogs WeeklyProgressLog[]
+  clientPackage      ClientPackage?      // One-to-one mapping to client purchase package
+  defects            PunchListDefect[]
+
+  @@unique([parcelId, slotNumber]) // Enforce unique slot number per land parcel
+  @@map("slots")
+}
+
+model Contractor {
+  id                String   @id @default(uuid())
+  name              String
+  contact           String
+  activeProjectSite String
+  company           String?
+  specialty         String?  // e.g., "Land Leveling", "Road Construction"
+  contractAmount    Decimal? @db.Decimal(12, 2)
+  paidAmount        Decimal? @db.Decimal(12, 2)
+  activeManpower    Int      @default(0)
+  milestoneProgress Float    @default(0.0) // percentage
+  rating            Float?   // scale of 1-5
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Relationships
+  assignedDefects   PunchListDefect[]
+
+  @@map("contractors")
+}
+
+model WeeklyProgressLog {
+  id                 String   @id @default(uuid())
+  slotId             String
+  inspectorId        String
+  date               DateTime @default(now())
+  percentageComplete Float    @default(0.0)
+  materialsUsed      String   @db.Text
+  manpowerHeadcount  Int      @default(0)
+  notes              String   @db.Text
+  complianceStatus   String?  // e.g., "Compliant", "Corrective Action Required"
+  structuralCheck    String?  // e.g., "Pass", "Fail"
+  safetyCheck        String?  // e.g., "Pass", "Fail"
+  siteActivity       String?  // e.g., "Road Subgrade", "Leveling"
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  // Relationships
+  slot      Slot @relation(fields: [slotId], references: [id], onDelete: Cascade)
+  inspector User @relation(fields: [inspectorId], references: [id])
+
+  @@map("weekly_progress_logs")
+}
+
+model PunchListDefect {
+  id              String   @id @default(uuid())
+  slotId          String
+  inspectorId     String
+  contractorId    String?
+  title           String
+  description     String   @db.Text
+  severity        String   @default("MEDIUM") // "LOW", "MEDIUM", "HIGH", "CRITICAL"
+  status          String   @default("OPEN")   // "OPEN", "CONTRACTOR_RECTIFIED", "RE_INSPECTED", "CLOSED"
+  category        String   @default("ROADS")  // "ROADS", "DRAINAGE", "GRADING", "BOUNDARY", "UTILITIES"
+  resolutionNotes String?  @db.Text
+  targetDate      DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Relationships
+  slot       Slot        @relation(fields: [slotId], references: [id], onDelete: Cascade)
+  inspector  User        @relation(fields: [inspectorId], references: [id])
+  contractor Contractor? @relation(fields: [contractorId], references: [id])
+
+  @@map("punch_list_defects")
+}
+
+model CivilWorksMilestone {
+  id                String   @id @default(uuid())
+  parcelId          String
+  phaseName         String   // "Phase A: Land Clearing & Grading", etc.
+  targetPercentage  Float    @default(100.0)
+  currentPercentage Float    @default(0.0)
+  status            String   @default("IN_PROGRESS") // "NOT_STARTED", "IN_PROGRESS", "INSPECTION_PENDING", "COMPLETED"
+  inspectorSignOff  Boolean  @default(false)
+  signOffDate       DateTime?
+  remarks           String?  @db.Text
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Relationships
+  landParcel LandParcel @relation(fields: [parcelId], references: [id], onDelete: Cascade)
+
+  @@map("civil_works_milestones")
+}
+
+model DailyManpowerAudit {
+  id                    String   @id @default(uuid())
+  date                  DateTime @default(now())
+  contractorId          String
+  contractorName        String
+  specialty             String
+  shift                 String   @default("Morning") // "Morning", "Afternoon", "Full Day"
+  claimedHeadcount      Int      @default(0)
+  verifiedHeadcount     Int      @default(0)
+  discrepancy           Int      @default(0)
+  assignedSectorOrLot   String
+  supervisorName        String
+  gpsCoordinates        String
+  verificationStatus    String   @default("VERIFIED_MATCH") // "VERIFIED_MATCH", "DISCREPANCY_FLAGGED", "RESOLVED"
+  photoEvidenceVerified Boolean  @default(true)
+  remarks               String   @db.Text
+  productivityIndex     Float    @default(90.0)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@map("daily_manpower_audits")
+}
+
+
+model BuyerKyc {
+  id                     String    @id @default(uuid())
+  userId                 String    @unique
+  govtIdVerified         Boolean   @default(false)
+  tinVerified            Boolean   @default(false)
+  proofOfIncomeVerified  Boolean   @default(false)
+  proofOfAddressVerified Boolean   @default(false)
+  maritalConsentVerified Boolean   @default(false)
+  kycStatus              String    @default("PENDING") // "PENDING", "UNDER_REVIEW", "VERIFIED"
+  verifiedAt             DateTime?
+  notes                  String?   @db.Text
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  // Relationships
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("buyer_kyc")
+}
+
+model ClientPackage {
+  id            String        @id @default(uuid())
+  userId        String        @unique // Role.CLIENT User
+  slotId        String        @unique // Selected Slot
+  price         Decimal       @db.Decimal(12, 2) // totalContractPrice
+  packageType   String        // e.g., "Standard Package (Land + Road Dev)"
+  paymentMethod PaymentMethod @default(INSTALLMENT)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  // Relationships
+  user                User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  slot                Slot                 @relation(fields: [slotId], references: [id], onDelete: Restrict)
+  installmentLedgers  InstallmentLedger[]
+  titlePermitTracker  TitlePermitTracker?
+
+  @@map("client_packages")
+}
+
+model InstallmentLedger {
+  id              String        @id @default(uuid())
+  clientPackageId String
+  dueDate         DateTime
+  amountDue       Decimal       @db.Decimal(12, 2)
+  amountPaid      Decimal?      @db.Decimal(12, 2)
+  paymentDate     DateTime?
+  status          PaymentStatus @default(PENDING)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  // Relationships
+  clientPackage ClientPackage @relation(fields: [clientPackageId], references: [id], onDelete: Cascade)
+
+  @@map("installment_ledgers")
+}
+
+model TitlePermitTracker {
+  id                             String   @id @default(uuid())
+  clientPackageId                String   @unique
+  currentPhase                   String   // e.g., "LGU Development Permit", "BIR eCAR", "Registry of Deeds TCT"
+  motherTitleVerified            Boolean  @default(true)
+  darClearanceApproved           Boolean  @default(true)
+  lguPermitIssued                Boolean  @default(false)
+  dhsudLicenseToSell             Boolean  @default(false)
+  legalPermitsApproved           Boolean  @default(false)
+  ctsSigned                      Boolean  @default(false)
+  deedOfSaleSigned               Boolean  @default(false)
+  birEcarIssued                  Boolean  @default(false)
+  taxDeclarationTransferred      Boolean  @default(false)
+  landTitleReleased              Boolean  @default(false)
+  registryOfDeedsTctReleased     Boolean  @default(false)
+  certificateOfAcceptanceSigned  Boolean  @default(false)
+  tctNumber                      String?  // e.g., "TCT-2026-089421"
+  taxDecNumber                   String?  // e.g., "TD-2026-CVNT-9982"
+  createdAt                      DateTime @default(now())
+  updatedAt                      DateTime @updatedAt
+
+  // Relationships
+  clientPackage ClientPackage @relation(fields: [clientPackageId], references: [id], onDelete: Cascade)
+
+  @@map("title_permit_trackers")
+}
+
+model ProcessAuditLog {
+  id         String   @id @default(uuid())
+  entityType String   // "SLOT", "CLIENT", "TITLING", "DEFECT", "CIVIL_WORKS", "TURNOVER"
+  entityId   String
+  action     String   // e.g., "SLOT_TRANSITION", "TITLING_MILESTONE_UPDATED", "DEFECT_RECTIFIED"
+  actorName  String
+  actorRole  String
+  details    String   @db.Text
+  createdAt  DateTime @default(now())
+
+  @@map("process_audit_logs")
+}
+
+enum PayrollRole {
+  INTERNAL_STAFF
+  SITE_MONITOR
+  CONTRACTOR
+}
+
+enum DisbursementType {
+  SALARY
+  CONTRACT_MILESTONE
+}
+
+enum PayrollStatus {
+  DISBURSED
+  PENDING
+}
+
+model PayrollRecord {
+  id               String           @id @default(uuid())
+  date             DateTime         @default(now())
+  payeeName        String
+  role             PayrollRole
+  disbursementType DisbursementType
+  amount           Decimal          @db.Decimal(12, 2)
+  status           PayrollStatus    @default(PENDING)
+  paymentMethod    String
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  @@map("payroll_records")
+}

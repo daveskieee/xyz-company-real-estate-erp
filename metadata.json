@@ -1,0 +1,8 @@
+{
+  "name": "JRAM Realty Development ERP",
+  "description": "An internal enterprise resource planning system for JRAM Realty Development Corporation managed by Chief Operating Officer Mauro R. Principe Jr., coordinating land acquisitions, client slot allocations, escrow tracking, and financial analytics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
