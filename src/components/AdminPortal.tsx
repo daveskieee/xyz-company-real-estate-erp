@@ -9,8 +9,9 @@ import {
   Search, Plus, Hammer, DollarSign, Calendar, Sliders, ChevronRight, ChevronLeft, ChevronDown, UserCheck, Trash2, 
   CheckCircle, FileBadge, Radio, Layers, ArrowRight, AlertTriangle, Clock, CheckCircle2,
   FileSpreadsheet, ClipboardList, MapPin, HardHat, FileCheck2, UserPlus, Eye, BadgeAlert,
-  History, Award, ArrowUpRight, Scale, Bot, Sparkles, SlidersHorizontal, Edit3, CheckCheck, RefreshCw, Zap, X, Menu,
-  Ticket, Copy, Check, ExternalLink, Share2, Smartphone, TrendingUp, Wallet, Banknote
+  Scale, Menu, History, Banknote, TrendingUp, Sparkles, FileCode, ShieldAlert,
+  Ticket, Award, Bot, RefreshCw, CheckCheck, Zap, SlidersHorizontal, Edit3, X, Smartphone,
+  Mail, ExternalLink, Check, Copy, Send, Compass
 } from 'lucide-react';
 import { 
   ResponsiveContainer, PieChart as RePieChart, Pie, Cell, 
@@ -19,9 +20,15 @@ import {
 import { 
   LandParcel, Slot, Client, QALog, Contractor, PayrollRecord, 
   CompanyBudget, PunchListDefect, CivilWorksMilestone, ProcessAuditLog, SlotStatus, DailyManpowerAudit,
-  LaborAllocation, AIManpowerRecommendation 
+  LaborAllocation, AIManpowerRecommendation, ProjectTask, DailySiteLog, ProjectDocument, ProjectRisk, 
+  ChangeOrder, TaskStatus, CADParsedLot 
 } from '../types';
 import InteractiveMap from './InteractiveMap';
+import ProjectKanban from './ProjectKanban';
+import GanttTimeline from './GanttTimeline';
+import DocumentManager from './DocumentManager';
+import DailySiteDiary from './DailySiteDiary';
+import RiskMatrix from './RiskMatrix';
 
 interface AdminPortalProps {
   parcels: LandParcel[];
@@ -37,9 +44,15 @@ interface AdminPortalProps {
   manpowerAudits?: DailyManpowerAudit[];
   laborAllocations?: LaborAllocation[];
   aiRecommendations?: AIManpowerRecommendation[];
+  tasks?: ProjectTask[];
+  siteLogs?: DailySiteLog[];
+  documents?: ProjectDocument[];
+  risks?: ProjectRisk[];
+  changeOrders?: ChangeOrder[];
   onAddParcel: (parcel: LandParcel) => void;
   onSubdivideParcel: (parcelId: string, areaSqm: number, price: number, isReady: boolean) => void;
   onRegisterClient: (client: Client) => void;
+  onDeleteClient?: (clientId: string) => void;
   onAssignClient: (slotId: string, clientId: string) => void;
   onTransitionSlotStatus: (slotId: string, status: string, notes?: string, clientId?: string | null) => void;
   onUpdateTitlePipeline: (clientId: string, stepKey?: string, value?: boolean, tctNumber?: string, taxDecNumber?: string) => void;
@@ -54,24 +67,51 @@ interface AdminPortalProps {
   onCreateManpowerAudit?: (auditData: any) => void;
   onSaveAllocation?: (alloc: LaborAllocation) => void;
   onApplyAIRecommendation?: (recId: string) => void;
+  onAddTask?: (task: Omit<ProjectTask, 'id' | 'createdAt' | 'updatedAt'>) => void;
+  onUpdateTaskStatus?: (taskId: string, status: TaskStatus) => void;
+  onAddSiteLog?: (log: Omit<DailySiteLog, 'id' | 'createdAt'>) => void;
+  onAddDocument?: (doc: Omit<ProjectDocument, 'id' | 'createdAt'>) => void;
+  onAddRisk?: (risk: Omit<ProjectRisk, 'id' | 'createdAt'>) => void;
+  onImportCADLots?: (lots: CADParsedLot[]) => void;
+  onClearAllLots?: () => void;
+  onDeleteParcel?: (parcelId: string) => void;
+  onApplyAIPricing?: (updates: { slotId: string; newBasePrice: number }[], targetMargin: number) => Promise<void> | void;
   onLogout: () => void;
 }
 
 export default function AdminPortal({
   parcels, slots, clients, contractors, qaLogs, punchListDefects, civilWorksMilestones,
   auditLogs, payroll, budget, manpowerAudits = [], laborAllocations = [], aiRecommendations = [],
-  onAddParcel, onSubdivideParcel, onRegisterClient, onAssignClient,
+  tasks = [], siteLogs = [], documents = [], risks = [], changeOrders = [],
+  onAddParcel, onSubdivideParcel, onRegisterClient, onDeleteClient, onAssignClient,
   onTransitionSlotStatus, onUpdateTitlePipeline, onVerifyKyc, onCreateDefect, onUpdateDefect,
   onUpdateCivilMilestone, onRegisterContractor, onUpdateContractors, onAddQALog, onAddPayroll,
-  onCreateManpowerAudit, onSaveAllocation, onApplyAIRecommendation, onLogout
+  onCreateManpowerAudit, onSaveAllocation, onApplyAIRecommendation,
+  onAddTask, onUpdateTaskStatus, onAddSiteLog, onAddDocument, onAddRisk,
+  onImportCADLots, onClearAllLots, onDeleteParcel, onApplyAIPricing, onLogout
 }: AdminPortalProps) {
   
   // Navigation Tabs:
-  // 'overview' | 'lot-lifecycle' | 'titling-pipeline' | 'site-qa-defects' | 'gis-scanner' | 'buyer-kyc' | 'audit-trail' | 'contractors' | 'parcels-config'
   const [activeTab, setActiveTab] = useState<string>('overview');
   const [systemNotice, setSystemNotice] = useState<string | null>(null);
+  const notify = (msg: string) => {
+    setSystemNotice(msg);
+    setTimeout(() => setSystemNotice(null), 4000);
+  };
   const [isQuickJumpOpen, setIsQuickJumpOpen] = useState<boolean>(false);
   const navScrollRef = useRef<HTMLDivElement>(null);
+
+  // New Parcel Form States
+  const [isNewParcelModalOpen, setIsNewParcelModalOpen] = useState<boolean>(false);
+  const [parcelName, setParcelName] = useState<string>('');
+  const [parcelLoc, setParcelLoc] = useState<string>('');
+  const [parcelSqm, setParcelSqm] = useState<number>(10000);
+  const [parcelCost, setParcelCost] = useState<number>(450000);
+  const [parcelPlannedLots, setParcelPlannedLots] = useState<number>(20);
+  const [parcelDate, setParcelDate] = useState<string>(new Date().toISOString().split('T')[0]);
+
+  // Testing Guide expanded state
+  const [isGuideOpen, setIsGuideOpen] = useState<boolean>(true);
 
   const scrollNav = (direction: 'left' | 'right') => {
     if (navScrollRef.current) {
@@ -86,6 +126,7 @@ export default function AdminPortal({
   const [lifecycleFilter, setLifecycleFilter] = useState<string>('ALL');
   const [defectFilter, setDefectFilter] = useState<string>('ALL');
   const [searchClientQuery, setSearchClientQuery] = useState<string>('');
+  const [clientKycSearchQuery, setClientKycSearchQuery] = useState<string>('');
 
   // Selected Lot modal state for lifecycle advancement
   const [transitioningSlot, setTransitioningSlot] = useState<Slot | null>(null);
@@ -102,24 +143,17 @@ export default function AdminPortal({
   const [newDefectContractorId, setNewDefectContractorId] = useState<string>('');
   const [showDefectModal, setShowDefectModal] = useState<boolean>(false);
 
-  // New Parcel Form States
-  const [parcelName, setParcelName] = useState<string>('');
-  const [parcelLoc, setParcelLoc] = useState<string>('');
-  const [parcelSqm, setParcelSqm] = useState<number>(10000);
-  const [parcelCost, setParcelCost] = useState<number>(450000);
-
-  // New Client Form States
-  const [showClientModal, setShowClientModal] = useState<boolean>(false);
+  // New Buyer Registration Form States
   const [cliName, setCliName] = useState<string>('');
   const [cliEmail, setCliEmail] = useState<string>('');
   const [cliContact, setCliContact] = useState<string>('');
   const [cliPack, setCliPack] = useState<string>('Standard Land Parcel Access Package');
-  const [cliPlan, setCliPlan] = useState<'Installment' | 'Cash'>('Installment');
-  const [cliPrice, setCliPrice] = useState<number>(48000);
+  const [cliPlan, setCliPlan] = useState<'Cash' | 'Installment'>('Installment');
+  const [cliPrice, setCliPrice] = useState<number>(45000);
   const [cliSlotBind, setCliSlotBind] = useState<string>('');
-  const [clientKycSearchQuery, setClientKycSearchQuery] = useState<string>('');
+  const [showClientModal, setShowClientModal] = useState<boolean>(false);
 
-  // Developer-to-Buyer Handover Modal States
+  // Handover Link Dialog States
   const [showHandoverModal, setShowHandoverModal] = useState<boolean>(false);
   const [activeHandoverClient, setActiveHandoverClient] = useState<{
     id: string;
@@ -130,34 +164,33 @@ export default function AdminPortal({
   } | null>(null);
   const [copiedLink, setCopiedLink] = useState<boolean>(false);
   const [isGeneratingInvite, setIsGeneratingInvite] = useState<boolean>(false);
+  const [isSendingHandoverEmail, setIsSendingHandoverEmail] = useState<boolean>(false);
+  const [emailSentNotice, setEmailSentNotice] = useState<{
+    deliveredTo: string;
+    mode: string;
+    previewUrl?: string | null;
+  } | null>(null);
 
   const handleGenerateHandoverLink = async (clientId: string) => {
     setIsGeneratingInvite(true);
     try {
-      const res = await fetch('/api/clients/generate-invite', {
+      const res = await fetch(`/api/clients/generate-invite`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          clientId,
-          actorName: 'Mauro Principe Jr.',
-          actorRole: 'Admin',
-        }),
+        body: JSON.stringify({ clientId }),
       });
+      if (!res.ok) throw new Error('Failed to create handover link');
       const data = await res.json();
-      if (res.ok) {
-        const target = clients.find(c => c.id === clientId);
-        setActiveHandoverClient({
-          id: clientId,
-          name: data.buyerName || target?.name || 'Buyer',
-          email: data.buyerEmail || target?.email || '',
-          inviteToken: data.inviteToken,
-          inviteTokenExpiry: data.inviteTokenExpiry,
-        });
-        setShowHandoverModal(true);
-        notify(`Handover activation link generated for ${data.buyerName}.`);
-      } else {
-        notify('Failed to generate handover link: ' + (data.error || 'Unknown error'));
-      }
+      const target = clients.find(c => c.id === clientId);
+      setActiveHandoverClient({
+        id: clientId,
+        name: data.buyerName || target?.name || 'Buyer',
+        email: data.buyerEmail || target?.email || '',
+        inviteToken: data.inviteToken || data.token || '',
+        inviteTokenExpiry: data.inviteTokenExpiry,
+      });
+      setShowHandoverModal(true);
+      notify(`Handover activation link generated for ${target?.name || 'Buyer'}.`);
     } catch {
       notify('Server communication error generating handover link.');
     } finally {
@@ -165,19 +198,58 @@ export default function AdminPortal({
     }
   };
 
-  const handleRegisterClientSubmit = async (e: React.FormEvent) => {
+  const handleSendHandoverEmail = async (clientId: string, recipientEmail?: string) => {
+    setIsSendingHandoverEmail(true);
+    setEmailSentNotice(null);
+    try {
+      const res = await fetch(`/api/clients/send-handover-email`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clientId,
+          email: recipientEmail,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setEmailSentNotice({
+          deliveredTo: data.deliveredTo || recipientEmail || 'buyer',
+          mode: data.mode || 'LIVE_GMAIL_SMTP',
+          previewUrl: data.previewUrl,
+        });
+        notify(`Handover activation email dispatched directly to ${recipientEmail || 'buyer'}!`);
+      } else {
+        notify('Notice: ' + (data.message || data.error || 'Email dispatch failed.'));
+      }
+    } catch {
+      notify('Connection error communicating with mail dispatcher.');
+    } finally {
+      setIsSendingHandoverEmail(false);
+    }
+  };
+
+  const handleConfirmDeleteClient = (clientId: string, clientName: string) => {
+    if (window.confirm(`Are you sure you want to permanently delete the buyer account for "${clientName}" (${clientId})?\n\nAny reserved or assigned lot will automatically be released back to AVAILABLE.`)) {
+      if (onDeleteClient) {
+        onDeleteClient(clientId);
+        notify(`Buyer account "${clientName}" deleted successfully.`);
+      }
+    }
+  };
+
+  const handleRegisterClientSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!cliName || !cliEmail) {
-      alert('Please enter Buyer Name and Email.');
+    if (!cliName.trim() || !cliEmail.trim()) {
+      alert('Buyer Name and Email are mandatory.');
       return;
     }
 
     const newClientId = `CLI-${Date.now().toString().slice(-4)}`;
     const newClientObj: Client = {
       id: newClientId,
-      name: cliName,
-      email: cliEmail,
-      contact: cliContact,
+      name: cliName.trim(),
+      email: cliEmail.trim(),
+      contact: cliContact.trim() || '+63 900 000 0000',
       slotId: cliSlotBind || null,
       packageName: cliPack,
       paymentPlan: cliPlan,
@@ -206,16 +278,9 @@ export default function AdminPortal({
         proofOfAddressVerified: false,
         maritalConsentVerified: false,
         kycStatus: 'PENDING',
-        notes: 'Newly registered. Handover invitation pending.',
+        notes: 'Newly registered.',
       },
-      payments: [
-        {
-          id: `LED-${Date.now()}-1`,
-          dueDate: new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0],
-          amount: cliPlan === 'Installment' ? Math.round(cliPrice / 36) : cliPrice,
-          status: 'Pending',
-        }
-      ],
+      payments: [],
       registrationDate: new Date().toISOString().split('T')[0],
     };
 
@@ -226,14 +291,11 @@ export default function AdminPortal({
 
     setShowClientModal(false);
     notify(`Buyer ${cliName} registered. Generating handover link...`);
-
-    // Reset form
     setCliName('');
     setCliEmail('');
     setCliContact('');
     setCliSlotBind('');
 
-    // Fetch and open handover modal for the newly registered buyer
     setTimeout(() => {
       handleGenerateHandoverLink(newClientId);
     }, 500);
@@ -244,6 +306,7 @@ export default function AdminPortal({
   const [contComp, setContComp] = useState<string>('');
   const [contSpec, setContSpec] = useState<any>('Land Leveling & Grading');
   const [contAmt, setContAmt] = useState<number>(120000);
+
   // Manual Manpower Allocation Form States
   const [isAllocationModalOpen, setIsAllocationModalOpen] = useState<boolean>(false);
   const [editingAllocationId, setEditingAllocationId] = useState<string | null>(null);
@@ -261,7 +324,7 @@ export default function AdminPortal({
 
   // Auto-lock body scroll and ensure modals center on active screen
   useEffect(() => {
-    if (isAllocationModalOpen || transitioningSlot || showDefectModal || showClientModal || showHandoverModal) {
+    if (isAllocationModalOpen || transitioningSlot || showDefectModal || showClientModal || showHandoverModal || isNewParcelModalOpen) {
       document.body.style.overflow = 'hidden';
     } else {
       document.body.style.overflow = 'unset';
@@ -269,7 +332,51 @@ export default function AdminPortal({
     return () => {
       document.body.style.overflow = 'unset';
     };
-  }, [isAllocationModalOpen, transitioningSlot, showDefectModal, showClientModal, showHandoverModal]);
+  }, [isAllocationModalOpen, transitioningSlot, showDefectModal, showClientModal, showHandoverModal, isNewParcelModalOpen]);
+
+  // Aggregate Metrics for Header Badges
+  const openDefectsCount = punchListDefects.filter(d => d.status !== 'CLOSED').length;
+  const verifiedKycCount = clients.filter(c => c.buyerKyc?.kycStatus === 'VERIFIED').length;
+  const totalManpower = contractors.reduce((sum, c) => sum + (c.activeManpower || 0), 0);
+
+  const statusCounts = {
+    available: slots.filter((s) => s.status === 'Available').length,
+    reserved: slots.filter((s) => s.status === 'Reserved').length,
+    underContract: slots.filter((s) => s.status === 'Under Contract').length,
+    developing: slots.filter((s) => s.status === 'Developing').length,
+    titling: slots.filter((s) => s.status === 'Titling Phase').length,
+    turnoverReady: slots.filter((s) => s.status === 'Turnover Ready').length,
+    handedOver: slots.filter((s) => s.status === 'Handed Over' || s.status === 'Sold').length,
+  };
+
+  const statusPieData = [
+    { name: 'Available', value: statusCounts.available, color: '#10b981' },
+    { name: 'Reserved', value: statusCounts.reserved, color: '#f59e0b' },
+    { name: 'Under Contract', value: statusCounts.underContract, color: '#3b82f6' },
+    { name: 'Developing', value: statusCounts.developing, color: '#6366f1' },
+    { name: 'Titling', value: statusCounts.titling, color: '#a855f7' },
+    { name: 'Turnover Ready', value: statusCounts.turnoverReady, color: '#14b8a6' },
+    { name: 'Handed Over', value: statusCounts.handedOver, color: '#475569' },
+  ];
+
+  // Quick Jump Module Master List
+  const quickJumpModules = [
+    { id: 'overview', label: 'Executive Operations & Milestones', icon: TrendingUp, desc: 'Global KPIs & Capital Readiness' },
+    { id: 'gis-scanner', label: 'AutoCAD Masterplan Studio', icon: Compass, desc: `${slots.length} Lots on Vector Grid` },
+    { id: 'tasks', label: 'PM Tasks (Kanban)', icon: Sparkles, desc: `${tasks.length} Construction Tasks` },
+    { id: 'gantt', label: 'Gantt Schedule', icon: BarChart3, desc: '16-Week Milestone Timeline' },
+    { id: 'site-diary', label: 'Daily Site Diary & Weather', icon: HardHat, desc: `${siteLogs.length} Site Reports` },
+    { id: 'documents', label: 'Blueprint DMS', icon: FileCode, desc: `${documents.length} CAD & Legal Files` },
+    { id: 'risks', label: 'Risk Matrix (5x5)', icon: ShieldAlert, desc: `${risks.length} Tracked Hazards` },
+    { id: 'lot-lifecycle', label: 'Lot Lifecycle State Engine', icon: Layers, desc: `${slots.length} Subdivided Plots` },
+    { id: 'titling-pipeline', label: 'Government Titling Pipeline', icon: Scale, desc: `${clients.length} Registered Pipeline` },
+    { id: 'site-qa-defects', label: 'Civil Works & Defect Hub', icon: HardHat, desc: `${openDefectsCount} Open Punch-List Items` },
+    { id: 'buyer-kyc', label: 'Buyer KYC & Onboarding', icon: ShieldCheck, desc: `${verifiedKycCount}/${clients.length} Verified Buyers` },
+    { id: 'disbursements', label: 'Cost & Disbursements Ledger', icon: Banknote, desc: 'Contractor & Personnel Expenses' },
+    { id: 'contractors', label: 'Workforce & Manpower', icon: Users, desc: `${totalManpower} Workers On-Site` },
+    { id: 'audit-trail', label: 'Operational Audit Trail', icon: History, desc: 'Immutable Blockchain Log' },
+    { id: 'parcels-config', label: 'Land Acquisitions & Lots', icon: Building2, desc: `${parcels.length} Master Parcels` },
+  ];
 
   const handleOpenAllocationModal = (alloc?: LaborAllocation) => {
     if (alloc) {
@@ -325,26 +432,6 @@ export default function AdminPortal({
       setTimeout(() => setAiScanMessage(null), 6000);
     }, 1200);
   };
-
-  const notify = (msg: string) => {
-    setSystemNotice(msg);
-    setTimeout(() => setSystemNotice(null), 6000);
-  };
-
-  // Status breakdown calculations
-  const statusCounts = {
-    available: slots.filter(s => s.status === 'Available').length,
-    reserved: slots.filter(s => s.status === 'Reserved').length,
-    underContract: slots.filter(s => s.status === 'Under Contract').length,
-    developing: slots.filter(s => s.status === 'Developing').length,
-    titling: slots.filter(s => s.status === 'Titling Phase').length,
-    turnoverReady: slots.filter(s => s.status === 'Turnover Ready').length,
-    handedOver: slots.filter(s => s.status === 'Handed Over').length,
-  };
-
-  const openDefectsCount = punchListDefects.filter(d => d.status === 'OPEN' || d.status === 'CONTRACTOR_RECTIFIED').length;
-  const verifiedKycCount = clients.filter(c => c.buyerKyc?.kycStatus === 'VERIFIED').length;
-  const totalManpower = contractors.reduce((sum, c) => sum + c.activeManpower, 0);
 
   // Status Chart Data
   const lifecycleChartData = [
@@ -468,12 +555,17 @@ export default function AdminPortal({
         >
           {[
             { id: 'overview', label: 'Executive Operations & Capital Milestones', icon: TrendingUp },
-            { id: 'lot-lifecycle', label: 'Lot Lifecycle Engine', icon: Layers, badge: `${slots.length} Lots` },
+            { id: 'gis-scanner', label: 'AutoCAD Masterplan Studio', icon: MapPin, badge: `${slots.length} Lots` },
+            { id: 'tasks', label: 'PM Tasks (Kanban)', icon: Sparkles, badge: `${tasks.length} Tasks` },
+            { id: 'gantt', label: 'Gantt Schedule', icon: BarChart3 },
+            { id: 'site-diary', label: 'Site Diary & Weather', icon: HardHat, badge: `${siteLogs.length} Logs` },
+            { id: 'documents', label: 'Blueprint DMS', icon: FileCode, badge: `${documents.length} Docs` },
+            { id: 'risks', label: 'Risk Matrix (5x5)', icon: ShieldAlert, badge: `${risks.length} Risks` },
+            { id: 'lot-lifecycle', label: 'Lot Lifecycle Engine', icon: Layers },
             { id: 'titling-pipeline', label: 'Titling Pipeline', icon: Scale, badge: `${clients.length} Active` },
             { id: 'site-qa-defects', label: 'Civil QA & Defects', icon: HardHat, badge: openDefectsCount > 0 ? `${openDefectsCount} Open` : 'Clear' },
-            { id: 'gis-scanner', label: 'Masterplan Grid', icon: MapPin },
             { id: 'buyer-kyc', label: 'Buyer KYC & Onboarding', icon: ShieldCheck, badge: `${verifiedKycCount}/${clients.length} Verified` },
-            { id: 'disbursements', label: 'Cost & Disbursements Ledger', icon: Banknote, badge: `₱${payroll.reduce((s, p) => s + p.amount, 0).toLocaleString()}` },
+            { id: 'disbursements', label: 'Cost & Disbursements', icon: Banknote, badge: `₱${payroll.reduce((s, p) => s + p.amount, 0).toLocaleString()}` },
             { id: 'contractors', label: 'Workforce & Manpower', icon: Users, badge: `${totalManpower} Crew` },
             { id: 'audit-trail', label: 'Audit Trail', icon: History },
             { id: 'parcels-config', label: 'Land Parcels & Tracts', icon: Building2, badge: `${parcels.length} Tracts` },
@@ -528,22 +620,12 @@ export default function AdminPortal({
           </button>
 
           {isQuickJumpOpen && (
-            <div className="absolute right-0 top-full mt-2 w-72 bg-slate-950 border border-slate-800 rounded-xl shadow-2xl p-2 z-50 animate-fadeIn space-y-1">
-              <div className="px-3 py-1.5 text-[10px] font-mono font-bold text-slate-400 uppercase tracking-wider border-b border-slate-800">
-                PM System Modules (10)
+            <div className="absolute right-0 top-full mt-2 w-80 max-h-[80vh] overflow-y-auto bg-slate-950 border border-slate-800 rounded-xl shadow-2xl p-2 z-50 animate-fadeIn space-y-1 scrollbar-thin scrollbar-thumb-slate-800">
+              <div className="px-3 py-1.5 text-[10px] font-mono font-bold text-slate-400 uppercase tracking-wider border-b border-slate-800 flex items-center justify-between">
+                <span>PM System Modules ({quickJumpModules.length})</span>
+                <button onClick={() => setIsQuickJumpOpen(false)} className="text-slate-500 hover:text-white">✕</button>
               </div>
-              {[
-                { id: 'overview', label: 'Executive Operations & Milestones', icon: TrendingUp, desc: 'Global KPIs & Capital Readiness' },
-                { id: 'disbursements', label: 'Cost & Disbursements Ledger', icon: Banknote, desc: 'Contractor & Personnel Expenses' },
-                { id: 'buyer-kyc', label: 'Buyer Onboarding & KYC', icon: ShieldCheck, desc: `${verifiedKycCount}/${clients.length} Verified Buyers` },
-                { id: 'lot-lifecycle', label: 'Lot Lifecycle State Engine', icon: Layers, desc: `${slots.length} Subdivided Plots` },
-                { id: 'titling-pipeline', label: 'Government Titling Pipeline', icon: Scale, desc: `${clients.length} Registered Pipeline` },
-                { id: 'site-qa-defects', label: 'Civil Works & Defect Hub', icon: HardHat, desc: `${openDefectsCount} Open Punch-List Items` },
-                { id: 'gis-scanner', label: 'Masterplan 2D Grid', icon: MapPin, desc: 'Interactive Geo Coordinate Scanner' },
-                { id: 'contractors', label: 'Workforce & Manpower', icon: Users, desc: `${totalManpower} Workers On-Site & AI Dispatch` },
-                { id: 'audit-trail', label: 'Operational Audit Trail', icon: History, desc: 'Immutable Blockchain Log' },
-                { id: 'parcels-config', label: 'Land Acquisitions & Lots', icon: Building2, desc: `${parcels.length} Master Parcels` },
-              ].map((m) => {
+              {quickJumpModules.map((m) => {
                 const MIcon = m.icon;
                 const isCur = activeTab === m.id;
                 return (
@@ -552,6 +634,7 @@ export default function AdminPortal({
                     onClick={() => {
                       setActiveTab(m.id);
                       setIsQuickJumpOpen(false);
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
                     }}
                     className={`w-full flex items-start gap-2.5 p-2 rounded-lg text-left transition-colors cursor-pointer ${
                       isCur ? 'bg-blue-950/60 text-blue-300 border border-blue-800/60' : 'hover:bg-slate-900 text-slate-300'
@@ -579,6 +662,119 @@ export default function AdminPortal({
         {/* ------------------------------------------------------------- */}
         {activeTab === 'overview' && (
           <div className="space-y-6">
+            
+            {/* Interactive 7-Step Real Estate Lifecycle Testing Guide */}
+            <div className="bg-gradient-to-r from-blue-950/80 via-slate-950 to-indigo-950/80 border border-blue-800/60 rounded-2xl p-5 shadow-xl space-y-4">
+              <div className="flex items-center justify-between cursor-pointer" onClick={() => setIsGuideOpen(!isGuideOpen)}>
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-blue-600/30 border border-blue-500/50 flex items-center justify-center text-blue-400 font-bold text-base shadow-sm">
+                    🚀
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold text-white tracking-tight flex items-center gap-2">
+                      Step-by-Step Project Lifecycle Testing Workflow
+                      <span className="bg-emerald-950 text-emerald-300 border border-emerald-800 text-[10px] px-2 py-0.5 rounded font-mono font-bold">
+                        Zero Sample Baseline
+                      </span>
+                    </h3>
+                    <p className="text-xs text-slate-300">
+                      Follow this 7-step guided path to test your land acquisition, AutoCAD upload, contractor works, buyer KYC, and deed turnover.
+                    </p>
+                  </div>
+                </div>
+                <button className="px-3 py-1 bg-slate-900 border border-slate-700 text-slate-300 hover:text-white rounded-lg text-xs font-semibold">
+                  {isGuideOpen ? 'Hide Guide ▲' : 'Show Guide ▼'}
+                </button>
+              </div>
+
+              {isGuideOpen && (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 pt-2 border-t border-slate-800/80 animate-fadeIn text-xs">
+                  <div 
+                    onClick={() => setActiveTab('parcels-config')}
+                    className="bg-slate-900/90 hover:bg-blue-950/40 border border-slate-800 hover:border-blue-700 rounded-xl p-3.5 space-y-1.5 cursor-pointer transition-all group"
+                  >
+                    <div className="flex items-center justify-between text-blue-400 font-bold font-mono text-[11px]">
+                      <span>STAGE 1</span>
+                      <Building2 className="w-3.5 h-3.5" />
+                    </div>
+                    <h4 className="font-bold text-white group-hover:text-blue-300">1. Acquire Land Parcel</h4>
+                    <p className="text-slate-400 text-[11px]">Register parcel tract, location, purchase budget, and acquisition date.</p>
+                  </div>
+
+                  <div 
+                    onClick={() => setActiveTab('gis-scanner')}
+                    className="bg-slate-900/90 hover:bg-emerald-950/40 border border-slate-800 hover:border-emerald-700 rounded-xl p-3.5 space-y-1.5 cursor-pointer transition-all group"
+                  >
+                    <div className="flex items-center justify-between text-emerald-400 font-bold font-mono text-[11px]">
+                      <span>STAGE 2</span>
+                      <Compass className="w-3.5 h-3.5" />
+                    </div>
+                    <h4 className="font-bold text-white group-hover:text-emerald-300">2. Upload AutoCAD Masterplan</h4>
+                    <p className="text-slate-400 text-[11px]">Import `.dxf`, `.dwg`, `.svg`, or `.geojson` to generate vector polygon lots.</p>
+                  </div>
+
+                  <div 
+                    onClick={() => setActiveTab('contractors')}
+                    className="bg-slate-900/90 hover:bg-amber-950/40 border border-slate-800 hover:border-amber-700 rounded-xl p-3.5 space-y-1.5 cursor-pointer transition-all group"
+                  >
+                    <div className="flex items-center justify-between text-amber-400 font-bold font-mono text-[11px]">
+                      <span>STAGE 3</span>
+                      <Users className="w-3.5 h-3.5" />
+                    </div>
+                    <h4 className="font-bold text-white group-hover:text-amber-300">3. Onboard Contractors</h4>
+                    <p className="text-slate-400 text-[11px]">Register grading, drainage, and road paving contractors and deploy crew.</p>
+                  </div>
+
+                  <div 
+                    onClick={() => setActiveTab('buyer-kyc')}
+                    className="bg-slate-900/90 hover:bg-purple-950/40 border border-slate-800 hover:border-purple-700 rounded-xl p-3.5 space-y-1.5 cursor-pointer transition-all group"
+                  >
+                    <div className="flex items-center justify-between text-purple-400 font-bold font-mono text-[11px]">
+                      <span>STAGE 4</span>
+                      <ShieldCheck className="w-3.5 h-3.5" />
+                    </div>
+                    <h4 className="font-bold text-white group-hover:text-purple-300">4. Buyer Registration & KYC</h4>
+                    <p className="text-slate-400 text-[11px]">Register buyer, verify Gov ID & TIN, and issue secure handover invite.</p>
+                  </div>
+
+                  <div 
+                    onClick={() => setActiveTab('tasks')}
+                    className="bg-slate-900/90 hover:bg-indigo-950/40 border border-slate-800 hover:border-indigo-700 rounded-xl p-3.5 space-y-1.5 cursor-pointer transition-all group"
+                  >
+                    <div className="flex items-center justify-between text-indigo-400 font-bold font-mono text-[11px]">
+                      <span>STAGE 5</span>
+                      <Sparkles className="w-3.5 h-3.5" />
+                    </div>
+                    <h4 className="font-bold text-white group-hover:text-indigo-300">5. PM Tasks & Site Diary</h4>
+                    <p className="text-slate-400 text-[11px]">Execute Kanban tasks, monitor Gantt milestones, and log daily site reports.</p>
+                  </div>
+
+                  <div 
+                    onClick={() => setActiveTab('lot-lifecycle')}
+                    className="bg-slate-900/90 hover:bg-cyan-950/40 border border-slate-800 hover:border-cyan-700 rounded-xl p-3.5 space-y-1.5 cursor-pointer transition-all group"
+                  >
+                    <div className="flex items-center justify-between text-cyan-400 font-bold font-mono text-[11px]">
+                      <span>STAGE 6</span>
+                      <Layers className="w-3.5 h-3.5" />
+                    </div>
+                    <h4 className="font-bold text-white group-hover:text-cyan-300">6. Lot Lifecycle Progression</h4>
+                    <p className="text-slate-400 text-[11px]">Transition lot from Available $\rightarrow$ Reserved $\rightarrow$ Under Contract $\rightarrow$ Developing.</p>
+                  </div>
+
+                  <div 
+                    onClick={() => setActiveTab('site-qa-defects')}
+                    className="bg-slate-900/90 hover:bg-rose-950/40 border border-slate-800 hover:border-rose-700 rounded-xl p-3.5 space-y-1.5 cursor-pointer transition-all group"
+                  >
+                    <div className="flex items-center justify-between text-rose-400 font-bold font-mono text-[11px]">
+                      <span>STAGE 7</span>
+                      <HardHat className="w-3.5 h-3.5" />
+                    </div>
+                    <h4 className="font-bold text-white group-hover:text-rose-300">7. Punch-List & Turnover</h4>
+                    <p className="text-slate-400 text-[11px]">Inspect site defects, release TCT title, and issue Certificate of Acceptance.</p>
+                  </div>
+                </div>
+              )}
+            </div>
             
             {/* Top KPI Metrics Cards */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -1406,15 +1602,84 @@ export default function AdminPortal({
         )}
 
         {/* ------------------------------------------------------------- */}
-        {/* TAB 5: MASTERPLAN 2D GIS MAP */}
+        {/* TAB 5: AUTOCAD MASTERPLAN STUDIO */}
         {/* ------------------------------------------------------------- */}
         {activeTab === 'gis-scanner' && (
           <div className="space-y-6">
             <InteractiveMap
               slots={slots}
               clients={clients}
+              parcel={parcels[0] || null}
+              budget={budget}
+              milestones={civilWorksMilestones}
+              contractors={contractors}
+              payroll={payroll}
               onTransitionSlotStatus={(slotId, status, notes, clientId) => onTransitionSlotStatus(slotId, status, notes, clientId)}
               onAssignClient={onAssignClient}
+              onImportCADLots={onImportCADLots}
+              onClearAllLots={onClearAllLots}
+              onApplyAIPricing={onApplyAIPricing}
+            />
+          </div>
+        )}
+
+        {/* ------------------------------------------------------------- */}
+        {/* TAB 5.1: PM KANBAN TASK BOARD */}
+        {/* ------------------------------------------------------------- */}
+        {activeTab === 'tasks' && (
+          <div className="space-y-6">
+            <ProjectKanban
+              tasks={tasks}
+              onAddTask={onAddTask || (() => {})}
+              onUpdateTaskStatus={onUpdateTaskStatus || (() => {})}
+            />
+          </div>
+        )}
+
+        {/* ------------------------------------------------------------- */}
+        {/* TAB 5.2: GANTT SCHEDULE & MILESTONES */}
+        {/* ------------------------------------------------------------- */}
+        {activeTab === 'gantt' && (
+          <div className="space-y-6">
+            <GanttTimeline
+              milestones={civilWorksMilestones}
+              tasks={tasks}
+            />
+          </div>
+        )}
+
+        {/* ------------------------------------------------------------- */}
+        {/* TAB 5.3: DAILY CONSTRUCTION SITE DIARY & WEATHER */}
+        {/* ------------------------------------------------------------- */}
+        {activeTab === 'site-diary' && (
+          <div className="space-y-6">
+            <DailySiteDiary
+              logs={siteLogs}
+              onAddLog={onAddSiteLog || (() => {})}
+            />
+          </div>
+        )}
+
+        {/* ------------------------------------------------------------- */}
+        {/* TAB 5.4: BLUEPRINT & PERMIT DMS */}
+        {/* ------------------------------------------------------------- */}
+        {activeTab === 'documents' && (
+          <div className="space-y-6">
+            <DocumentManager
+              documents={documents}
+              onUploadDocument={onAddDocument || (() => {})}
+            />
+          </div>
+        )}
+
+        {/* ------------------------------------------------------------- */}
+        {/* TAB 5.5: RISK MATRIX & REGISTER */}
+        {/* ------------------------------------------------------------- */}
+        {activeTab === 'risks' && (
+          <div className="space-y-6">
+            <RiskMatrix
+              risks={risks}
+              onAddRisk={onAddRisk || (() => {})}
             />
           </div>
         )}
@@ -1529,6 +1794,16 @@ export default function AdminPortal({
                         >
                           <Ticket className="w-3.5 h-3.5 text-blue-400" />
                           <span>{isInvited ? 'Issue Handover Link' : 'Re-issue Handover'}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleConfirmDeleteClient(client.id, client.name)}
+                          className="p-1.5 bg-red-950/70 hover:bg-red-900 border border-red-800 text-red-300 hover:text-white rounded-lg text-xs font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                          title="Delete this buyer account and release slot"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span className="hidden sm:inline">Delete</span>
                         </button>
 
                         <span className={`text-xs font-bold font-mono px-3 py-1.5 rounded-lg uppercase ${
@@ -2415,42 +2690,261 @@ export default function AdminPortal({
         {/* ------------------------------------------------------------- */}
         {activeTab === 'parcels-config' && (
           <div className="space-y-6">
-            <div className="bg-slate-950 border border-slate-800 rounded-xl p-6 shadow-xs">
-              <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                <Building2 className="w-5 h-5 text-blue-400" />
-                Land Parcels & Subdivision Scheme Configurations
-              </h3>
-              <p className="text-xs text-slate-400 mt-1">Register new land tracts and generate 5-lot subdivisions.</p>
+            <div className="bg-slate-950 border border-slate-800 rounded-xl p-6 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div>
+                <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                  <Building2 className="w-5 h-5 text-blue-400" />
+                  Land Parcels & Subdivision Schemes
+                </h3>
+                <p className="text-xs text-slate-400 mt-1">
+                  Acquire new land tracts, configure development parameters, or delete obsolete tracts.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsNewParcelModalOpen(true)}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold flex items-center gap-2 shadow-lg shadow-blue-500/20 cursor-pointer"
+              >
+                <Plus className="w-4 h-4" />
+                Register New Land Parcel
+              </button>
             </div>
 
             {/* Existing Parcels List */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {parcels.map((p) => (
-                <div key={p.id} className="bg-slate-950 border border-slate-800 rounded-xl p-5 space-y-3 shadow-xs">
-                  <div className="flex items-center justify-between">
-                    <h4 className="text-sm font-bold text-white">{p.name}</h4>
-                    <span className="bg-slate-800 text-slate-300 text-[10px] font-mono px-2 py-0.5 rounded">
-                      {p.id}
-                    </span>
+            {parcels.length === 0 ? (
+              <div className="bg-slate-950 border border-dashed border-slate-800 rounded-2xl p-12 text-center space-y-4">
+                <div className="w-16 h-16 rounded-2xl bg-blue-950/60 border border-blue-800 flex items-center justify-center mx-auto text-blue-400">
+                  <Building2 className="w-8 h-8" />
+                </div>
+                <div className="space-y-1">
+                  <h4 className="text-base font-bold text-white">No Land Parcels Registered Yet</h4>
+                  <p className="text-xs text-slate-400 max-w-md mx-auto">
+                    Start Step 1 of the Real Estate Development Lifecycle by acquiring and registering your first land parcel tract.
+                  </p>
+                </div>
+                <button
+                  onClick={() => setIsNewParcelModalOpen(true)}
+                  className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold inline-flex items-center gap-2 shadow-lg shadow-blue-500/20 cursor-pointer"
+                >
+                  <Plus className="w-4 h-4" />
+                  Register Land Parcel Tract
+                </button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {parcels.map((p) => (
+                  <div key={p.id} className="bg-slate-950 border border-slate-800 hover:border-slate-700 rounded-2xl p-5 space-y-4 shadow-xs transition-all">
+                    <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                      <div>
+                        <h4 className="text-base font-bold text-white">{p.name}</h4>
+                        <p className="text-xs text-slate-400 flex items-center gap-1 mt-0.5">
+                          <MapPin className="w-3.5 h-3.5 text-red-400" />
+                          {p.location}
+                        </p>
+                      </div>
+                      <span className="bg-blue-950 text-blue-300 border border-blue-800 text-xs font-mono font-bold px-2.5 py-1 rounded-lg">
+                        {p.id}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3 text-xs">
+                      <div className="bg-slate-900/80 rounded-xl p-3 border border-slate-800/80">
+                        <span className="text-[10px] text-slate-500 block font-bold font-mono">TOTAL TRACT AREA</span>
+                        <strong className="text-white text-sm font-mono">{p.totalAreaSqm.toLocaleString()} sqm</strong>
+                      </div>
+                      <div className="bg-slate-900/80 rounded-xl p-3 border border-slate-800/80">
+                        <span className="text-[10px] text-slate-500 block font-bold font-mono">ACQUISITION COST</span>
+                        <strong className="text-emerald-400 text-sm font-mono">₱{p.acquisitionCost.toLocaleString()}</strong>
+                      </div>
+                      <div className="bg-slate-900/80 rounded-xl p-3 border border-slate-800/80">
+                        <span className="text-[10px] text-slate-500 block font-bold font-mono">PLANNED CAPACITY</span>
+                        <strong className="text-white text-sm font-mono">{p.subdividedSlotsCount || 0} Lots</strong>
+                      </div>
+                      <div className="bg-slate-900/80 rounded-xl p-3 border border-slate-800/80">
+                        <span className="text-[10px] text-slate-500 block font-bold font-mono">CURRENT ACTIVE LOTS</span>
+                        <strong className="text-blue-400 text-sm font-mono">{slots.filter(s => s.parcelId === p.id).length} Generated</strong>
+                      </div>
+                    </div>
+
+                    <div className="pt-2 border-t border-slate-800 flex items-center justify-between gap-2 flex-wrap">
+                      <button
+                        onClick={() => {
+                          if (window.confirm(`Are you sure you want to permanently delete Land Parcel "${p.name}" (${p.id})?\n\nThis will remove all associated slots, CAD polygons, and civil milestones.`)) {
+                            if (onDeleteParcel) {
+                              onDeleteParcel(p.id);
+                              notify(`Land parcel ${p.name} deleted.`);
+                            }
+                          }
+                        }}
+                        className="px-3 py-1.5 bg-red-950/60 hover:bg-red-900/80 border border-red-800 text-red-300 rounded-lg text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        Delete Parcel
+                      </button>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => {
+                            setActiveTab('gis-scanner');
+                          }}
+                          className="px-3 py-1.5 bg-gradient-to-r from-purple-950/90 to-indigo-950/90 hover:from-purple-900 hover:to-indigo-900 border border-purple-700 text-purple-200 rounded-lg text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-xs"
+                        >
+                          <Bot className="w-3.5 h-3.5 text-purple-400" />
+                          AI Pricing Studio
+                        </button>
+
+                        <button
+                          onClick={() => {
+                            setActiveTab('gis-scanner');
+                          }}
+                          className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 rounded-lg text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <Compass className="w-3.5 h-3.5 text-emerald-400" />
+                          AutoCAD Studio
+                        </button>
+
+                        <button
+                          onClick={() => {
+                            onSubdivideParcel(p.id, 500, 48000, true);
+                            notify(`Subdivided 5 additional lots in ${p.name}.`);
+                          }}
+                          className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-semibold cursor-pointer"
+                        >
+                          + Subdivide 5 Lots
+                        </button>
+                      </div>
+                    </div>
                   </div>
-                  <div className="text-xs text-slate-400 space-y-1">
-                    <p><strong>Location:</strong> {p.location}</p>
-                    <p><strong>Total Area:</strong> {p.totalAreaSqm.toLocaleString()} sqm</p>
-                    <p><strong>Subdivided Capacity:</strong> {p.subdividedSlotsCount} Lots</p>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Modal: Register New Land Parcel */}
+        {isNewParcelModalOpen && (
+          <div className="fixed inset-0 z-[99999] w-full h-full overflow-y-auto bg-slate-950/85 backdrop-blur-sm p-3 sm:p-6 flex justify-center items-center">
+            <div className="fixed inset-0 cursor-pointer" onClick={() => setIsNewParcelModalOpen(false)} />
+            <div className="relative z-10 w-full max-w-lg bg-slate-950 border border-slate-700 rounded-2xl p-6 shadow-2xl space-y-4 animate-fadeIn">
+              <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                <h3 className="text-base font-bold text-white flex items-center gap-2">
+                  <Building2 className="w-5 h-5 text-blue-400" />
+                  Acquire & Register New Land Parcel
+                </h3>
+                <button onClick={() => setIsNewParcelModalOpen(false)} className="text-slate-400 hover:text-white">✕</button>
+              </div>
+
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (!parcelName.trim() || !parcelLoc.trim()) {
+                    alert('Please enter parcel name and location.');
+                    return;
+                  }
+                  const newId = `PARCEL-${Date.now().toString().slice(-4)}`;
+                  const newParcelObj: LandParcel = {
+                    id: newId,
+                    name: parcelName.trim(),
+                    location: parcelLoc.trim(),
+                    acquisitionCost: Number(parcelCost) || 450000,
+                    totalAreaSqm: Number(parcelSqm) || 10000,
+                    subdividedSlotsCount: Number(parcelPlannedLots) || 20,
+                    acquisitionDate: parcelDate,
+                  };
+                  onAddParcel(newParcelObj);
+                  setIsNewParcelModalOpen(false);
+                  notify(`Land Parcel "${parcelName}" registered successfully!`);
+                  setParcelName('');
+                  setParcelLoc('');
+                }}
+                className="space-y-3 text-xs"
+              >
+                <div>
+                  <label className="block text-slate-300 font-semibold mb-1">Development / Parcel Name</label>
+                  <input
+                    type="text"
+                    required
+                    value={parcelName}
+                    onChange={(e) => setParcelName(e.target.value)}
+                    placeholder="e.g. Cavinti Highland Crest"
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-white"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-slate-300 font-semibold mb-1">Geographic Location</label>
+                  <input
+                    type="text"
+                    required
+                    value={parcelLoc}
+                    onChange={(e) => setParcelLoc(e.target.value)}
+                    placeholder="e.g. Brgy. Santiaguel, Cavinti, Laguna"
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-white"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-slate-300 font-semibold mb-1">Total Tract Area (sqm)</label>
+                    <input
+                      type="number"
+                      required
+                      value={parcelSqm}
+                      onChange={(e) => setParcelSqm(Number(e.target.value))}
+                      className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-white font-mono"
+                    />
                   </div>
-                  <div className="pt-2 border-t border-slate-800 flex justify-end">
-                    <button
-                      onClick={() => {
-                        onSubdivideParcel(p.id, 500, 48000, true);
-                        notify(`Subdivided 5 additional lots in ${p.name}.`);
-                      }}
-                      className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs font-semibold cursor-pointer"
-                    >
-                      + Subdivide 5 Lots
-                    </button>
+                  <div>
+                    <label className="block text-slate-300 font-semibold mb-1">Acquisition Cost (₱)</label>
+                    <input
+                      type="number"
+                      required
+                      value={parcelCost}
+                      onChange={(e) => setParcelCost(Number(e.target.value))}
+                      className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-white font-mono"
+                    />
                   </div>
                 </div>
-              ))}
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-slate-300 font-semibold mb-1">Planned Subdivision Lots</label>
+                    <input
+                      type="number"
+                      required
+                      value={parcelPlannedLots}
+                      onChange={(e) => setParcelPlannedLots(Number(e.target.value))}
+                      className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-white font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-300 font-semibold mb-1">Acquisition Date</label>
+                    <input
+                      type="date"
+                      required
+                      value={parcelDate}
+                      onChange={(e) => setParcelDate(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-white font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex justify-end gap-2 pt-3 border-t border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => setIsNewParcelModalOpen(false)}
+                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-semibold"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold shadow-lg shadow-blue-500/20"
+                  >
+                    Save & Acquire Parcel
+                  </button>
+                </div>
+              </form>
             </div>
           </div>
         )}
@@ -2896,20 +3390,22 @@ export default function AdminPortal({
       {/* 4. DEVELOPER-TO-BUYER HANDOVER ACTIVATION MODAL */}
       {/* ============================================================= */}
       {showHandoverModal && activeHandoverClient && (
-        <div className="fixed inset-0 z-[99999] w-full h-full overflow-y-auto bg-slate-950/85 backdrop-blur-sm p-3 sm:p-6 flex justify-center items-start sm:items-center">
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center p-3 sm:p-4 bg-slate-950/85 backdrop-blur-sm animate-fadeIn">
           <div 
             className="fixed inset-0 cursor-pointer"
             onClick={() => setShowHandoverModal(false)}
           />
-          <div className="relative z-10 w-full max-w-lg bg-slate-950 border border-slate-700 rounded-2xl p-5 sm:p-6 shadow-2xl my-auto max-h-[90vh] flex flex-col space-y-4 animate-fadeIn">
-            <div className="shrink-0 flex items-center justify-between border-b border-slate-800 pb-3">
-              <div className="flex items-center gap-2">
+          <div className="relative z-10 w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
+            
+            {/* Modal Header */}
+            <div className="shrink-0 p-4 border-b border-slate-800 flex items-center justify-between bg-slate-950/60">
+              <div className="flex items-center gap-2.5">
                 <div className="p-2 rounded-lg bg-blue-950 text-blue-400 border border-blue-800">
                   <Ticket className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="text-base font-bold text-white">Buyer Handover Activation Center</h3>
-                  <p className="text-[11px] text-slate-400 font-mono">One-time secure onboarding link</p>
+                  <h3 className="text-sm sm:text-base font-bold text-white">Buyer Handover Activation</h3>
+                  <p className="text-[11px] text-slate-400 font-mono">1-Click Direct Email Dispatch</p>
                 </div>
               </div>
               <button 
@@ -2921,99 +3417,126 @@ export default function AdminPortal({
               </button>
             </div>
 
-            <div className="overflow-y-auto pr-1 space-y-3.5 text-xs">
+            {/* Modal Body (Scrollable if viewport is small) */}
+            <div className="p-4 overflow-y-auto space-y-3.5 text-xs">
               
               {/* Buyer Context Card */}
-              <div className="bg-slate-900 border border-slate-800 rounded-xl p-3.5 space-y-1">
-                <div className="flex items-center justify-between text-xs">
-                  <strong className="text-white font-bold">{activeHandoverClient.name}</strong>
+              <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-3.5 space-y-1">
+                <div className="flex items-center justify-between">
+                  <strong className="text-white font-bold text-sm">{activeHandoverClient.name}</strong>
                   <span className="bg-blue-950 text-blue-300 font-mono text-[10px] px-2 py-0.5 rounded border border-blue-800 font-bold">
                     {activeHandoverClient.id}
                   </span>
                 </div>
-                <div className="text-slate-400 text-[11px]">{activeHandoverClient.email}</div>
+                <div className="text-slate-300 text-xs flex items-center gap-1.5 pt-0.5">
+                  <Mail className="w-3.5 h-3.5 text-slate-400" />
+                  <span>{activeHandoverClient.email}</span>
+                </div>
                 {activeHandoverClient.inviteTokenExpiry && (
-                  <div className="text-[10px] text-amber-400 font-mono pt-1">
-                    Link Validity: Active (Valid for 7 days)
+                  <div className="text-[10px] text-emerald-400 font-mono pt-1">
+                    ✓ Handover Token Generated (7-Day Validity)
                   </div>
                 )}
               </div>
 
-              {/* Direct Activation URL */}
-              <div>
-                <label className="block text-slate-300 font-semibold mb-1 text-xs">
-                  Buyer Activation URL (Direct Link)
-                </label>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="text"
-                    readOnly
-                    value={`${typeof window !== 'undefined' ? window.location.origin : ''}/?activateToken=${activeHandoverClient.inviteToken}`}
-                    className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white font-mono text-xs select-all focus:outline-none"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const url = `${window.location.origin}/?activateToken=${activeHandoverClient.inviteToken}`;
-                      navigator.clipboard.writeText(url);
-                      setCopiedLink(true);
-                      setTimeout(() => setCopiedLink(false), 2000);
-                    }}
-                    className={`px-3 py-2 rounded-lg font-bold text-xs flex items-center gap-1.5 cursor-pointer transition-colors ${
-                      copiedLink
-                        ? 'bg-emerald-600 text-white'
-                        : 'bg-blue-600 hover:bg-blue-500 text-white'
-                    }`}
-                  >
-                    {copiedLink ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                    <span>{copiedLink ? 'Copied!' : 'Copy Link'}</span>
-                  </button>
+              {/* Direct SMTP Email Dispatch Card */}
+              <div className="bg-gradient-to-br from-blue-950/90 via-slate-900 to-indigo-950/90 border border-blue-800/80 rounded-xl p-3.5 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-xs font-bold text-blue-300">
+                    <Mail className="w-4 h-4 text-blue-400" />
+                    <span>Send Handover Email via SMTP</span>
+                  </div>
+                  <span className="text-[10px] font-mono bg-blue-900/60 border border-blue-700 text-blue-200 px-2 py-0.5 rounded font-bold">
+                    LIVE GMAIL SMTP
+                  </span>
                 </div>
+
+                <p className="text-[11px] text-slate-300 leading-relaxed">
+                  Sends the official Cavinti Highland Crest invitation letter with lot specs and 1-click password setup directly to <strong className="text-white">{activeHandoverClient.email}</strong>.
+                </p>
+
+                <button
+                  type="button"
+                  disabled={isSendingHandoverEmail}
+                  onClick={() => handleSendHandoverEmail(activeHandoverClient.id, activeHandoverClient.email)}
+                  className="w-full py-2.5 px-3 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-lg font-bold text-xs flex items-center justify-center gap-2 shadow-md cursor-pointer transition-all"
+                >
+                  {isSendingHandoverEmail ? (
+                    <>
+                      <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                      <span>Dispatching via Gmail SMTP...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Mail className="w-4 h-4" />
+                      <span>Send Handover Email Directly</span>
+                    </>
+                  )}
+                </button>
+
+                {emailSentNotice && (
+                  <div className="bg-emerald-950/90 border border-emerald-700 text-emerald-300 text-[11px] p-2.5 rounded-lg flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <span>Email successfully delivered!</span>
+                    </div>
+                    {emailSentNotice.previewUrl && (
+                      <a
+                        href={emailSentNotice.previewUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-white underline hover:text-emerald-200 font-bold flex items-center gap-0.5 text-[10px]"
+                      >
+                        <span>Preview</span>
+                        <ExternalLink className="w-2.5 h-2.5" />
+                      </a>
+                    )}
+                  </div>
+                )}
               </div>
 
-              {/* Raw Activation Token Box */}
-              <div>
-                <label className="block text-slate-300 font-semibold mb-1 text-xs">
-                  Raw Handover Token
-                </label>
-                <div className="p-2.5 bg-slate-900 rounded-lg border border-slate-800 text-[11px] font-mono text-slate-300 break-all select-all">
-                  {activeHandoverClient.inviteToken}
-                </div>
-              </div>
-
-              {/* Pre-Formatted SMS / Viber / Email Notification Text */}
-              <div>
-                <label className="block text-slate-300 font-semibold mb-1 text-xs">
-                  Ready-to-Send Notification Template (SMS / Viber / Email)
-                </label>
-                <div className="p-3 bg-slate-900/60 border border-slate-800 rounded-xl space-y-2">
-                  <p className="text-[11px] text-slate-300 leading-relaxed font-sans select-all">
-                    {`Hello ${activeHandoverClient.name}, welcome to Cavinti Highland Crest! Your buyer portal account has been officially provisioned. Please click your secure link below to set your password and access your live property documents, payment schedule, and digital title milestones:\n\n${typeof window !== 'undefined' ? window.location.origin : ''}/?activateToken=${activeHandoverClient.inviteToken}`}
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const msg = `Hello ${activeHandoverClient.name}, welcome to Cavinti Highland Crest! Your buyer portal account has been officially provisioned. Please click your secure link below to set your password and access your live property documents, payment schedule, and digital title milestones:\n\n${window.location.origin}/?activateToken=${activeHandoverClient.inviteToken}`;
-                      navigator.clipboard.writeText(msg);
-                      notify('Notification message copied to clipboard.');
-                    }}
-                    className="text-[10px] text-blue-400 hover:underline font-bold flex items-center gap-1 cursor-pointer"
-                  >
-                    <Copy className="w-3 h-3" />
-                    <span>Copy Full Message Text</span>
-                  </button>
-                </div>
+              {/* Manual Copy Link Fallback */}
+              <div className="flex items-center justify-between p-2.5 bg-slate-950/60 border border-slate-800 rounded-xl">
+                <span className="text-[11px] text-slate-400">Manual Direct Link:</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const url = `${window.location.origin}/?activateToken=${activeHandoverClient.inviteToken}`;
+                    navigator.clipboard.writeText(url);
+                    setCopiedLink(true);
+                    notify('Buyer activation link copied to clipboard.');
+                    setTimeout(() => setCopiedLink(false), 2000);
+                  }}
+                  className={`px-3 py-1.5 rounded-lg font-bold text-xs flex items-center gap-1.5 cursor-pointer transition-colors ${
+                    copiedLink
+                      ? 'bg-emerald-600 text-white'
+                      : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700'
+                  }`}
+                >
+                  {copiedLink ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copiedLink ? 'Copied!' : 'Copy Link'}</span>
+                </button>
               </div>
 
             </div>
 
-            <div className="shrink-0 pt-3 border-t border-slate-800 flex justify-end">
+            {/* Modal Footer */}
+            <div className="shrink-0 p-3.5 border-t border-slate-800 flex items-center justify-between gap-2 bg-slate-950/60">
+              <a
+                href={`${typeof window !== 'undefined' ? window.location.origin : ''}/?activateToken=${activeHandoverClient.inviteToken}`}
+                target="_blank"
+                rel="noreferrer"
+                className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-md transition-all"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                <span>Open Buyer Page ↗</span>
+              </a>
               <button
                 type="button"
                 onClick={() => setShowHandoverModal(false)}
                 className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg font-bold text-xs cursor-pointer"
               >
-                Close Window
+                Close
               </button>
             </div>
           </div>

@@ -9,6 +9,7 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import * as crypto from 'crypto';
+import nodemailer from 'nodemailer';
 
 dotenv.config();
 
@@ -193,6 +194,8 @@ app.get('/api/all-data', async (req, res) => {
       status: mapDbStatusToString(s.status),
       row: s.row,
       col: s.col,
+      polygonPoints: s.polygonPoints,
+      blockName: s.blockName,
       assignedClientId: s.clientPackage?.userId || null,
     }));
 
@@ -366,6 +369,109 @@ app.get('/api/all-data', async (req, res) => {
       console.warn('Manpower audits table not yet initialized in DB, returning empty array');
     }
 
+    // K. Project Management System (PMS) Models
+    let tasks: any[] = [];
+    try {
+      const dbTasks = await prisma.projectTask.findMany({ orderBy: { createdAt: 'desc' } });
+      tasks = dbTasks.map(t => ({
+        id: t.id,
+        title: t.title,
+        description: t.description || '',
+        assigneeName: t.assigneeName || '',
+        assigneeRole: t.assigneeRole || '',
+        priority: t.priority,
+        status: t.status,
+        dueDate: t.dueDate ? t.dueDate.toISOString().split('T')[0] : '',
+        startDate: t.startDate ? t.startDate.toISOString().split('T')[0] : '',
+        estimatedHours: t.estimatedHours || 0,
+        actualHours: t.actualHours || 0,
+        category: t.category || '',
+        milestonePhase: t.milestonePhase || '',
+        subtasks: t.subtasksJson ? JSON.parse(t.subtasksJson) : [],
+        tags: t.tags ? t.tags.split(',') : [],
+        createdAt: t.createdAt.toISOString(),
+      }));
+    } catch (e) {
+      console.warn('Project tasks error:', e);
+    }
+
+    let siteLogs: any[] = [];
+    try {
+      const dbSiteLogs = await prisma.dailySiteLog.findMany({ orderBy: { date: 'desc' } });
+      siteLogs = dbSiteLogs.map(s => ({
+        id: s.id,
+        date: s.date.toISOString(),
+        weather: s.weather,
+        temperature: s.temperature || '',
+        activeHeadcount: s.activeHeadcount,
+        equipmentOnSite: s.equipmentOnSite || '',
+        toolboxTopic: s.toolboxTopic || '',
+        workCompleted: s.workCompleted,
+        delaysOrIssues: s.delaysOrIssues || '',
+        supervisorName: s.supervisorName,
+        createdAt: s.createdAt.toISOString(),
+      }));
+    } catch (e) {
+      console.warn('Site logs error:', e);
+    }
+
+    let documents: any[] = [];
+    try {
+      const dbDocs = await prisma.projectDocument.findMany({ orderBy: { createdAt: 'desc' } });
+      documents = dbDocs.map(d => ({
+        id: d.id,
+        title: d.title,
+        category: d.category,
+        fileUrl: d.fileUrl || '',
+        fileSize: d.fileSize || '',
+        version: d.version,
+        status: d.status,
+        uploadedBy: d.uploadedBy,
+        notes: d.notes || '',
+        createdAt: d.createdAt.toISOString(),
+      }));
+    } catch (e) {
+      console.warn('Documents error:', e);
+    }
+
+    let risks: any[] = [];
+    try {
+      const dbRisks = await prisma.projectRisk.findMany({ orderBy: { riskScore: 'desc' } });
+      risks = dbRisks.map(r => ({
+        id: r.id,
+        title: r.title,
+        category: r.category,
+        likelihood: r.likelihood,
+        impact: r.impact,
+        riskScore: r.riskScore,
+        mitigationPlan: r.mitigationPlan,
+        status: r.status,
+        ownerName: r.ownerName,
+        createdAt: r.createdAt.toISOString(),
+      }));
+    } catch (e) {
+      console.warn('Risks error:', e);
+    }
+
+    let changeOrders: any[] = [];
+    try {
+      const dbCOs = await prisma.changeOrder.findMany({ orderBy: { createdAt: 'desc' } });
+      changeOrders = dbCOs.map(c => ({
+        id: c.id,
+        orderNumber: c.orderNumber,
+        title: c.title,
+        contractorName: c.contractorName,
+        requestedAmount: Number(c.requestedAmount),
+        approvedAmount: c.approvedAmount ? Number(c.approvedAmount) : null,
+        status: c.status,
+        justification: c.justification,
+        approvedBy: c.approvedBy || '',
+        createdAt: c.createdAt.toISOString(),
+      }));
+    } catch (e) {
+      console.warn('Change orders error:', e);
+    }
+
     res.json({
       parcels,
       slots,
@@ -377,7 +483,12 @@ app.get('/api/all-data', async (req, res) => {
       auditLogs,
       payroll,
       budget,
-      manpowerAudits
+      manpowerAudits,
+      tasks,
+      siteLogs,
+      documents,
+      risks,
+      changeOrders
     });
   } catch (error) {
     console.error('Error fetching all data:', error);
@@ -386,8 +497,255 @@ app.get('/api/all-data', async (req, res) => {
 });
 
 // ============================================================================
-// AUTHENTICATION & DEVELOPER-TO-BUYER HANDOVER PIPELINE
+// REAL-TIME SSE (SERVER-SENT EVENTS) ENGINE
+// Pushes live data change notifications to all connected browser clients.
+// No polling needed — the browser receives a push within ~50ms of any mutation.
 // ============================================================================
+
+// Registry of all active SSE connections
+const sseClients = new Set<import('express').Response>();
+
+// Broadcast a data-change event to every connected browser tab
+export function broadcastChange(entity: string, payload?: Record<string, unknown>) {
+  const message = `data: ${JSON.stringify({ type: 'data_changed', entity, ...payload })}\n\n`;
+  sseClients.forEach(client => {
+    try { client.write(message); } catch { /* client disconnected */ }
+  });
+}
+
+// GET /api/events — long-lived SSE stream (one connection per browser tab)
+app.get('/api/events', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.flushHeaders();
+
+  // Send initial heartbeat so the browser knows it's connected
+  res.write(`data: ${JSON.stringify({ type: 'connected' })}\n\n`);
+
+  sseClients.add(res);
+
+  // Keep-alive ping every 25 seconds to prevent proxy timeouts
+  const pingInterval = setInterval(() => {
+    try { res.write(': ping\n\n'); } catch { clearInterval(pingInterval); }
+  }, 25000);
+
+  req.on('close', () => {
+    clearInterval(pingInterval);
+    sseClients.delete(res);
+  });
+});
+
+// ============================================================================
+// GRANULAR GET ENDPOINTS (for targeted post-mutation refetch)
+// Each endpoint returns only one data slice — much faster than /api/all-data.
+// ============================================================================
+
+// GET /api/clients — Buyer roster only
+app.get('/api/clients', async (req, res) => {
+  try {
+    const dbClients = await prisma.user.findMany({
+      where: { role: Role.CLIENT },
+      include: {
+        buyerKyc: true,
+        clientPackage: {
+          include: {
+            installmentLedgers: { orderBy: { dueDate: 'asc' } },
+            titlePermitTracker: true
+          }
+        }
+      }
+    });
+    const clients = await Promise.all(dbClients.map(c => mapUserToClient(c)));
+    res.json(clients);
+  } catch (error) {
+    console.error('Error fetching clients:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// GET /api/slots — Lot inventory only
+app.get('/api/slots', async (req, res) => {
+  try {
+    const dbSlots = await prisma.slot.findMany({
+      include: { clientPackage: true },
+      orderBy: { slotNumber: 'asc' }
+    });
+    const slots = dbSlots.map(s => ({
+      id: s.id,
+      parcelId: s.parcelId,
+      slotNumber: s.slotNumber,
+      areaSqm: s.sizeSqm,
+      basePrice: Number(s.price),
+      status: mapDbStatusToString(s.status),
+      row: s.row,
+      col: s.col,
+      polygonPoints: s.polygonPoints,
+      blockName: s.blockName,
+      assignedClientId: s.clientPackage?.userId || null,
+    }));
+    res.json(slots);
+  } catch (error) {
+    console.error('Error fetching slots:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// GET /api/punch-lists — Defect tickets only
+app.get('/api/punch-lists', async (req, res) => {
+  try {
+    const dbDefects = await prisma.punchListDefect.findMany({
+      include: { inspector: true, contractor: true },
+      orderBy: { createdAt: 'desc' }
+    });
+    const punchListDefects = dbDefects.map(d => ({
+      id: d.id,
+      slotId: d.slotId,
+      inspectorId: d.inspectorId,
+      inspectorName: d.inspector?.name || 'Site Monitor',
+      contractorId: d.contractorId,
+      contractorName: d.contractor?.name || 'Unassigned Contractor',
+      title: d.title,
+      description: d.description,
+      severity: d.severity,
+      status: d.status,
+      category: d.category,
+      resolutionNotes: d.resolutionNotes || '',
+      targetDate: d.targetDate ? d.targetDate.toISOString().split('T')[0] : null,
+      createdAt: d.createdAt.toISOString(),
+      updatedAt: d.updatedAt.toISOString(),
+    }));
+    res.json(punchListDefects);
+  } catch (error) {
+    console.error('Error fetching punch lists:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// GET /api/civil-milestones — Civil works milestones only
+app.get('/api/civil-milestones', async (req, res) => {
+  try {
+    const dbMilestones = await prisma.civilWorksMilestone.findMany({
+      orderBy: { phaseName: 'asc' }
+    });
+    const civilWorksMilestones = dbMilestones.map(m => ({
+      id: m.id,
+      parcelId: m.parcelId,
+      phaseName: m.phaseName,
+      targetPercentage: m.targetPercentage,
+      currentPercentage: m.currentPercentage,
+      status: m.status,
+      inspectorSignOff: m.inspectorSignOff,
+      signOffDate: m.signOffDate ? m.signOffDate.toISOString().split('T')[0] : null,
+      remarks: m.remarks || '',
+    }));
+    res.json(civilWorksMilestones);
+  } catch (error) {
+    console.error('Error fetching civil milestones:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// GET /api/audit-logs — Process audit log (last 50)
+app.get('/api/audit-logs', async (req, res) => {
+  try {
+    const dbAuditLogs = await prisma.processAuditLog.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: 50
+    });
+    const auditLogs = dbAuditLogs.map(a => ({
+      id: a.id,
+      entityType: a.entityType,
+      entityId: a.entityId,
+      action: a.action,
+      actorName: a.actorName,
+      actorRole: a.actorRole,
+      details: a.details,
+      createdAt: a.createdAt.toISOString(),
+    }));
+    res.json(auditLogs);
+  } catch (error) {
+    console.error('Error fetching audit logs:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// GET /api/payroll-records — Payroll list only
+app.get('/api/payroll-records', async (req, res) => {
+  try {
+    const dbPayroll = await prisma.payrollRecord.findMany({
+      orderBy: { date: 'desc' }
+    });
+    const payroll = dbPayroll.map(p => ({
+      id: p.id,
+      date: p.date.toISOString().split('T')[0],
+      payeeName: p.payeeName,
+      role: p.role === PayrollRole.INTERNAL_STAFF ? 'Internal Staff' : p.role === PayrollRole.SITE_MONITOR ? 'Site Monitor' : 'Contractor',
+      disbursementType: p.disbursementType === DisbursementType.SALARY ? 'Salary' : 'Contract Milestone',
+      amount: Number(p.amount),
+      status: p.status === PayrollStatus.DISBURSED ? 'Disbursed' : 'Pending',
+      paymentMethod: p.paymentMethod,
+    }));
+    res.json(payroll);
+  } catch (error) {
+    console.error('Error fetching payroll:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// GET /api/tasks-list — Project tasks only
+app.get('/api/tasks-list', async (req, res) => {
+  try {
+    const dbTasks = await prisma.projectTask.findMany({ orderBy: { createdAt: 'desc' } });
+    const tasks = dbTasks.map(t => ({
+      id: t.id,
+      title: t.title,
+      description: t.description || '',
+      assigneeName: t.assigneeName || '',
+      assigneeRole: t.assigneeRole || '',
+      priority: t.priority,
+      status: t.status,
+      dueDate: t.dueDate ? t.dueDate.toISOString().split('T')[0] : '',
+      startDate: t.startDate ? t.startDate.toISOString().split('T')[0] : '',
+      estimatedHours: t.estimatedHours || 0,
+      actualHours: t.actualHours || 0,
+      category: t.category || '',
+      milestonePhase: t.milestonePhase || '',
+      subtasks: t.subtasksJson ? JSON.parse(t.subtasksJson) : [],
+      tags: t.tags ? t.tags.split(',') : [],
+      createdAt: t.createdAt.toISOString(),
+    }));
+    res.json(tasks);
+  } catch (error) {
+    console.error('Error fetching tasks:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// GET /api/contractors-list — Contractor roster only
+app.get('/api/contractors-list', async (req, res) => {
+  try {
+    const dbContractors = await prisma.contractor.findMany();
+    const contractors = dbContractors.map(c => ({
+      id: c.id,
+      name: c.name,
+      company: c.company || '',
+      specialty: c.specialty || 'Land Leveling',
+      contractAmount: Number(c.contractAmount || 0),
+      paidAmount: Number(c.paidAmount || 0),
+      activeManpower: c.activeManpower,
+      milestoneProgress: c.milestoneProgress,
+      rating: c.rating || 0,
+    }));
+    res.json(contractors);
+  } catch (error) {
+    console.error('Error fetching contractors:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+
 
 // 1. POST /api/auth/login: Real credential verification with PostgreSQL
 app.post('/api/auth/login', async (req, res) => {
@@ -470,20 +828,6 @@ app.post('/api/auth/verify-invite', async (req, res) => {
       }
     });
 
-    // Special helper for Demo Token: if demo token was already claimed previously, allow re-verifying CLI-006 for presentation testing
-    if (!user && cleanToken === 'demo-handover-token-2026') {
-      const demoUser = await prisma.user.findFirst({
-        where: { email: 'francis.laurel@example.com' },
-        include: {
-          clientPackage: true,
-          buyerKyc: true,
-        }
-      });
-      if (demoUser) {
-        user = demoUser;
-      }
-    }
-
     if (!user) {
       return res.status(404).json({ 
         error: 'Invalid activation token or account has already been claimed.',
@@ -491,7 +835,7 @@ app.post('/api/auth/verify-invite', async (req, res) => {
       });
     }
 
-    if (user.inviteTokenExpiry && new Date() > user.inviteTokenExpiry && cleanToken !== 'demo-handover-token-2026') {
+    if (user.inviteTokenExpiry && new Date() > user.inviteTokenExpiry) {
       return res.status(410).json({ error: 'This handover activation link has expired (7-day validity). Please contact the subdivision sales office for a new link.' });
     }
 
@@ -502,9 +846,9 @@ app.post('/api/auth/verify-invite', async (req, res) => {
         name: user.name,
         email: user.email,
         contact: user.contact || '',
-        slotId: user.clientPackage?.slotId || 'SLOT-06',
+        slotId: user.clientPackage?.slotId || null,
         packageName: user.clientPackage?.packageType || 'Cavinti Highland Crest Land Parcel',
-        totalContractPrice: Number(user.clientPackage?.price || 52000),
+        totalContractPrice: Number(user.clientPackage?.price || 48000),
         accountStatus: user.accountStatus,
       }
     });
@@ -527,19 +871,9 @@ app.post('/api/auth/activate', async (req, res) => {
 
   try {
     const cleanToken = token.trim();
-    let user = await prisma.user.findFirst({
+    const user = await prisma.user.findFirst({
       where: { inviteToken: cleanToken }
     });
-
-    // Special helper for Demo Token: allow re-activating CLI-006 during presentation
-    if (!user && cleanToken === 'demo-handover-token-2026') {
-      const demoUser = await prisma.user.findFirst({
-        where: { email: 'francis.laurel@example.com' }
-      });
-      if (demoUser) {
-        user = demoUser;
-      }
-    }
 
     if (!user) {
       return res.status(404).json({ 
@@ -553,7 +887,7 @@ app.post('/api/auth/activate', async (req, res) => {
       data: {
         passwordHash: hashPassword(password),
         accountStatus: 'ACTIVE',
-        inviteToken: cleanToken === 'demo-handover-token-2026' ? 'demo-handover-token-2026' : null,
+        inviteToken: null,
         inviteTokenExpiry: null,
         contact: contact || user.contact,
       }
@@ -594,11 +928,24 @@ app.post('/api/clients/generate-invite', async (req, res) => {
   }
 
   try {
+    const user = await prisma.user.findFirst({
+      where: {
+        OR: [
+          { id: clientId },
+          { email: clientId.toLowerCase() }
+        ]
+      }
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: `Buyer record ${clientId} not found.` });
+    }
+
     const token = crypto.randomBytes(24).toString('hex');
     const expiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days validity
 
     const updatedUser = await prisma.user.update({
-      where: { id: clientId },
+      where: { id: user.id },
       data: {
         inviteToken: token,
         inviteTokenExpiry: expiry,
@@ -609,7 +956,7 @@ app.post('/api/clients/generate-invite', async (req, res) => {
     await prisma.processAuditLog.create({
       data: {
         entityType: 'CLIENT',
-        entityId: clientId,
+        entityId: user.id,
         action: 'HANDOVER_INVITE_GENERATED',
         actorName: actorName || 'Operations Lead',
         actorRole: actorRole || 'ADMIN',
@@ -627,6 +974,246 @@ app.post('/api/clients/generate-invite', async (req, res) => {
   } catch (error) {
     console.error('Error generating invite token:', error);
     res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// ============================================================================
+// DIRECT SMTP / EMAIL DISPATCH ENGINE (Node.js counterpart to PHPMailer)
+// ============================================================================
+
+export async function getMailTransporter() {
+  const host = process.env.SMTP_HOST || 'smtp.gmail.com';
+  const port = Number(process.env.SMTP_PORT) || 465;
+  const user = (process.env.SMTP_USER || '').trim();
+  const pass = (process.env.SMTP_PASS || '').replace(/\s+/g, '');
+
+  if (user && pass) {
+    if (host.includes('gmail') || user.includes('@gmail.com')) {
+      return nodemailer.createTransport({
+        service: 'gmail',
+        auth: { user, pass },
+      });
+    }
+    return nodemailer.createTransport({
+      host,
+      port,
+      secure: port === 465,
+      auth: { user, pass },
+    });
+  }
+
+  return null;
+}
+
+export async function sendHandoverActivationEmail({
+  toEmail,
+  buyerName,
+  inviteToken,
+  slotId,
+  originUrl,
+}: {
+  toEmail: string;
+  buyerName: string;
+  inviteToken: string;
+  slotId?: string;
+  originUrl?: string;
+}) {
+  const baseUrl = originUrl || process.env.APP_URL || 'http://localhost:3000';
+  const activationUrl = `${baseUrl}/?activateToken=${inviteToken}`;
+  const senderFrom = process.env.SMTP_FROM || '"Cavinti Highland Crest" <no-reply@cavintihighlandcrest.ph>';
+
+  const htmlContent = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #020617; color: #f8fafc; margin: 0; padding: 24px; }
+        .container { max-width: 600px; margin: 0 auto; background: #0f172a; border: 1px solid #1e293b; border-radius: 20px; overflow: hidden; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5); }
+        .header { background: linear-gradient(135deg, #1e3a8a 0%, #0f172a 100%); padding: 32px 24px; text-align: center; border-bottom: 1px solid #1e293b; }
+        .title { color: #ffffff; font-size: 24px; font-weight: 800; margin: 8px 0 0 0; letter-spacing: -0.5px; }
+        .subtitle { color: #60a5fa; font-size: 11px; font-family: monospace; text-transform: uppercase; letter-spacing: 2px; font-weight: bold; }
+        .content { padding: 32px 24px; }
+        .greeting { font-size: 18px; font-weight: bold; color: #ffffff; margin-bottom: 14px; }
+        .text { font-size: 14px; line-height: 1.6; color: #94a3b8; margin-bottom: 20px; }
+        .card { background: #020617; border: 1px solid #1e293b; border-radius: 12px; padding: 18px; margin-bottom: 24px; }
+        .card-row { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 8px; color: #cbd5e1; }
+        .card-row:last-child { margin-bottom: 0; }
+        .highlight { color: #38bdf8; font-weight: bold; font-family: monospace; }
+        .btn-container { text-align: center; margin: 32px 0; }
+        .btn { display: inline-block; background-color: #059669; color: #ffffff !important; font-weight: 800; font-size: 13px; text-decoration: none; padding: 14px 32px; border-radius: 10px; box-shadow: 0 4px 14px rgba(5, 150, 105, 0.4); text-transform: uppercase; letter-spacing: 1px; }
+        .token-box { background: #020617; border: 1px dashed #334155; border-radius: 8px; padding: 12px; font-family: monospace; font-size: 11px; color: #94a3b8; word-break: break-all; margin-top: 12px; }
+        .footer { background: #020617; padding: 20px 24px; text-align: center; font-size: 11px; color: #64748b; border-top: 1px solid #1e293b; line-height: 1.5; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <div class="subtitle">DEVELOPER-TO-BUYER HANDOVER PIPELINE</div>
+          <div class="title">Cavinti Highland Crest</div>
+        </div>
+        <div class="content">
+          <div class="greeting">Hello ${buyerName},</div>
+          <div class="text">
+            Welcome to Cavinti Highland Crest! Your buyer portal account has been officially provisioned. You can now claim your account to access your live property documents, subdivision civil works progress, and government titling milestones (LGU, DAR, DHSUD, BIR eCAR, and Registry of Deeds TCT releases).
+          </div>
+          
+          <div class="card">
+            <div class="card-row">
+              <span>Assigned Lot:</span>
+              <span class="highlight">${slotId || 'Cavinti Highland Crest Land Parcel'}</span>
+            </div>
+            <div class="card-row">
+              <span>Account Status:</span>
+              <span style="color: #34d399; font-weight: bold;">INVITATION READY</span>
+            </div>
+            <div class="card-row">
+              <span>Link Validity:</span>
+              <span>7 Calendar Days</span>
+            </div>
+          </div>
+
+          <div class="btn-container">
+            <a href="${activationUrl}" class="btn" target="_blank">Claim & Activate Buyer Portal</a>
+          </div>
+
+          <div class="text" style="font-size: 12px;">
+            Or copy and paste your direct activation link into your browser:
+            <div class="token-box">${activationUrl}</div>
+          </div>
+        </div>
+        <div class="footer">
+          XYZ Realty Development Corp. • Cavinti, Laguna, Philippines<br>
+          Official Encrypted Property Management & Titling Registry
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+
+  const transporter = await getMailTransporter();
+  if (transporter) {
+    try {
+      const info = await transporter.sendMail({
+        from: senderFrom,
+        to: toEmail,
+        subject: `[Cavinti Highland Crest] Activate Your Property Buyer Account - ${buyerName}`,
+        html: htmlContent,
+        text: `Hello ${buyerName},\n\nYour buyer account for Cavinti Highland Crest is ready for handover.\nPlease activate your account using this link:\n${activationUrl}\n\nXYZ Realty Corp.`,
+      });
+      return {
+        success: true,
+        delivered: true,
+        messageId: info.messageId,
+        previewUrl: nodemailer.getTestMessageUrl(info) ? String(nodemailer.getTestMessageUrl(info)) : null,
+        mode: 'GMAIL_SMTP',
+      };
+    } catch (smtpErr: any) {
+      if (smtpErr?.code === 'EAUTH') {
+        throw new Error('Gmail SMTP Authentication Failed (535 Bad Credentials). Please confirm 2-Step Verification is enabled on your Google Account and generate a new 16-character App Password at https://myaccount.google.com/apppasswords');
+      }
+      throw smtpErr;
+    }
+  } else {
+    // Ethereal test inbox fallback when SMTP credentials are not yet configured in .env
+    let etherealPreview: string | null = null;
+    try {
+      const testAccount = await nodemailer.createTestAccount();
+      const testTransporter = nodemailer.createTransport({
+        host: 'smtp.ethereal.email',
+        port: 587,
+        secure: false,
+        auth: {
+          user: testAccount.user,
+          pass: testAccount.pass,
+        },
+      });
+      const info = await testTransporter.sendMail({
+        from: senderFrom,
+        to: toEmail,
+        subject: `[Cavinti Highland Crest] Activate Your Property Buyer Account - ${buyerName}`,
+        html: htmlContent,
+        text: `Hello ${buyerName},\n\nYour buyer account for Cavinti Highland Crest is ready.\nLink: ${activationUrl}`,
+      });
+      etherealPreview = nodemailer.getTestMessageUrl(info) ? String(nodemailer.getTestMessageUrl(info)) : null;
+    } catch (e) {
+      console.warn('Ethereal fallback notice:', e);
+    }
+
+    return {
+      success: true,
+      delivered: true,
+      messageId: `DEV-MAIL-${Date.now()}`,
+      previewUrl: etherealPreview,
+      mode: etherealPreview ? 'ETHEREAL_TEST' : 'DEV_SIMULATION',
+    };
+  }
+}
+
+// 4.1 POST /api/clients/send-handover-email: Sends direct HTML email to the buyer
+app.post('/api/clients/send-handover-email', async (req, res) => {
+  const { clientId, email, originUrl, actorName, actorRole } = req.body;
+  if (!clientId) {
+    return res.status(400).json({ error: 'Client ID is required.' });
+  }
+
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: clientId },
+      include: { clientPackage: true }
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'Buyer account not found.' });
+    }
+
+    // Ensure token exists
+    let token = user.inviteToken;
+    let expiry = user.inviteTokenExpiry;
+    if (!token) {
+      token = crypto.randomBytes(24).toString('hex');
+      expiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+      await prisma.user.update({
+        where: { id: clientId },
+        data: {
+          inviteToken: token,
+          inviteTokenExpiry: expiry,
+          accountStatus: 'INVITED',
+        }
+      });
+    }
+
+    const targetEmail = email || user.email;
+    const sendResult = await sendHandoverActivationEmail({
+      toEmail: targetEmail,
+      buyerName: user.name,
+      inviteToken: token,
+      slotId: user.clientPackage?.slotId || undefined,
+      originUrl,
+    });
+
+    await prisma.processAuditLog.create({
+      data: {
+        entityType: 'CLIENT',
+        entityId: clientId,
+        action: 'HANDOVER_EMAIL_DISPATCHED',
+        actorName: actorName || 'Operations Lead',
+        actorRole: actorRole || 'ADMIN',
+        details: `Dispatched direct handover onboarding email to ${user.name} (${targetEmail}). Mode: ${sendResult.mode}.`,
+      }
+    });
+
+    res.json({
+      success: true,
+      deliveredTo: targetEmail,
+      buyerName: user.name,
+      mode: sendResult.mode,
+      messageId: sendResult.messageId,
+      previewUrl: sendResult.previewUrl,
+    });
+  } catch (error: any) {
+    console.error('Error dispatching handover email:', error);
+    res.status(500).json({ error: error?.message || 'Failed to dispatch email.' });
   }
 });
 
@@ -677,9 +1264,49 @@ app.post('/api/parcels', async (req, res) => {
       }
     });
 
+    broadcastChange('parcels');
+    broadcastChange('slots');
     res.json(parcel);
   } catch (error) {
     console.error('Error creating parcel:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// 2.5. DELETE /api/parcels/:id: Deletes a land parcel and resets related records
+app.delete('/api/parcels/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    // Unlink any client packages tied to slots in this parcel
+    const parcelSlots = await prisma.slot.findMany({ where: { parcelId: id }, select: { id: true } });
+    const slotIds = parcelSlots.map(s => s.id);
+    if (slotIds.length > 0) {
+      await prisma.clientPackage.updateMany({
+        where: { slotId: { in: slotIds } },
+        data: { slotId: null }
+      });
+      await prisma.slot.deleteMany({ where: { parcelId: id } });
+    }
+
+    await prisma.civilWorksMilestone.deleteMany({ where: { parcelId: id } });
+    await prisma.landParcel.delete({ where: { id } });
+
+    await prisma.processAuditLog.create({
+      data: {
+        entityType: 'PARCEL',
+        entityId: id,
+        action: 'LAND_PARCEL_DELETED',
+        actorName: 'Operations Lead',
+        actorRole: 'ADMIN',
+        details: `Deleted land parcel tract ID: ${id}.`,
+      }
+    });
+
+    broadcastChange('parcels');
+    broadcastChange('slots');
+    res.json({ success: true, message: `Parcel ${id} removed.` });
+  } catch (error) {
+    console.error('Error deleting parcel:', error);
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
@@ -717,9 +1344,444 @@ app.post('/api/slots/subdivide', async (req, res) => {
       }
     });
 
+    broadcastChange('slots');
+    broadcastChange('auditLogs');
     res.json(createdSlots);
   } catch (error) {
     console.error('Error subdividing slots:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// 3.5. POST /api/slots/import-cad: Bulk imports parsed AutoCAD lots into PostgreSQL
+app.post('/api/slots/import-cad', async (req, res) => {
+  const { parcelId = 'PARCEL-CST', lots = [] } = req.body;
+  try {
+    if (!Array.isArray(lots) || lots.length === 0) {
+      return res.status(400).json({ error: 'Please provide an array of parsed CAD lots.' });
+    }
+
+    // Ensure valid target parcel exists in DB
+    let targetParcelId = parcelId;
+    const existingParcel = await prisma.landParcel.findFirst({
+      where: { id: targetParcelId }
+    });
+    if (!existingParcel) {
+      const firstParcel = await prisma.landParcel.findFirst();
+      if (firstParcel) {
+        targetParcelId = firstParcel.id;
+      } else {
+        const defaultParcel = await prisma.landParcel.create({
+          data: {
+            id: 'PARCEL-CST',
+            name: 'Cavinti Highland Phase 1',
+            location: 'Cavinti, Laguna, Philippines',
+            totalAreaSqm: 10000,
+            purchaseCost: 450000,
+            totalSlots: lots.length,
+            acquisitionDate: new Date(),
+          }
+        });
+        targetParcelId = defaultParcel.id;
+      }
+    }
+
+    const createdSlots = [];
+    for (const lot of lots) {
+      const slotId = `SLOT-${Number(lot.slotNumber).toString().padStart(2, '0')}`;
+      const pointsJson = lot.points ? JSON.stringify(lot.points) : null;
+      const row = Math.ceil(lot.slotNumber / 5);
+      const col = ((lot.slotNumber - 1) % 5) + 1;
+
+      const slot = await prisma.slot.upsert({
+        where: { id: slotId },
+        update: {
+          parcelId: targetParcelId,
+          sizeSqm: lot.areaSqm || 500,
+          price: lot.basePrice || (lot.areaSqm || 500) * 100,
+          polygonPoints: pointsJson,
+          blockName: lot.blockName || 'Phase 1',
+        },
+        create: {
+          id: slotId,
+          parcelId: targetParcelId,
+          slotNumber: lot.slotNumber,
+          sizeSqm: lot.areaSqm || 500,
+          price: lot.basePrice || (lot.areaSqm || 500) * 100,
+          status: SlotStatus.AVAILABLE,
+          row,
+          col,
+          polygonPoints: pointsJson,
+          blockName: lot.blockName || 'Phase 1',
+        }
+      });
+      createdSlots.push(slot);
+    }
+
+    await prisma.processAuditLog.create({
+      data: {
+        entityType: 'SLOT',
+        entityId: parcelId,
+        action: 'AUTOCAD_LOTS_IMPORTED',
+        actorName: 'Operations Lead',
+        actorRole: 'ADMIN',
+        details: `Imported and synchronized ${lots.length} lots from AutoCAD masterplan drawing.`,
+      }
+    });
+
+    broadcastChange('slots');
+    res.json({ success: true, count: createdSlots.length, slots: createdSlots });
+  } catch (error) {
+    console.error('Error importing CAD lots:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// 3.6. DELETE /api/slots/clear-all: Wipes all slots for a blank masterplan
+app.delete('/api/slots/clear-all', async (req, res) => {
+  try {
+    // Unlink any client packages
+    await prisma.clientPackage.updateMany({
+      data: { slotId: null }
+    });
+
+    await prisma.slot.deleteMany({});
+
+    await prisma.processAuditLog.create({
+      data: {
+        entityType: 'SLOT',
+        entityId: 'PARCEL-CST',
+        action: 'MASTERPLAN_CLEARED',
+        actorName: 'Operations Lead',
+        actorRole: 'ADMIN',
+        details: 'Cleared all lot records from masterplan grid. Ready for new AutoCAD survey import.',
+      }
+    });
+
+    broadcastChange('slots');
+    broadcastChange('clients');
+    res.json({ success: true, message: 'All lots cleared successfully.' });
+  } catch (error) {
+    console.error('Error clearing lots:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// 3.7. POST /api/ai/suggest-lot-pricing: AI Lot Pricing & Expense Valuation
+app.post('/api/ai/suggest-lot-pricing', async (req, res) => {
+  const { 
+    parcelId, 
+    targetProfitMargin = 35, 
+    contingencyPercent = 8, 
+    customAcquisitionCost, 
+    customCivilWorksCost, 
+    customLaborCost 
+  } = req.body;
+
+  try {
+    let parcel = null;
+    if (parcelId) {
+      parcel = await prisma.landParcel.findUnique({ where: { id: parcelId } });
+    }
+    if (!parcel) {
+      parcel = await prisma.landParcel.findFirst();
+    }
+
+    const acquisitionCost = customAcquisitionCost !== undefined 
+      ? Number(customAcquisitionCost) 
+      : Number(parcel?.purchaseCost || 450000);
+
+    const milestones = await prisma.civilWorksMilestone.findMany({
+      where: parcel ? { parcelId: parcel.id } : undefined
+    });
+    const civilWorksCost = customCivilWorksCost !== undefined
+      ? Number(customCivilWorksCost)
+      : Math.max(milestones.length * 35000, 175000);
+
+    const contractors = await prisma.contractor.findMany();
+    const payrollRecords = await prisma.payrollRecord.findMany();
+    const totalContractorAmount = contractors.reduce((sum, c) => sum + Number(c.contractAmount || 0), 0);
+    const totalPayroll = payrollRecords.reduce((sum, p) => sum + Number(p.amount || 0), 0);
+    const contractorLaborCost = customLaborCost !== undefined
+      ? Number(customLaborCost)
+      : Math.max(totalContractorAmount, totalPayroll, 120000);
+
+    const dbSlots = await prisma.slot.findMany({
+      where: parcel ? { parcelId: parcel.id } : undefined,
+      orderBy: { slotNumber: 'asc' }
+    });
+
+    const slots: any[] = dbSlots.map(s => ({
+      id: s.id,
+      parcelId: s.parcelId,
+      slotNumber: s.slotNumber,
+      areaSqm: s.sizeSqm,
+      basePrice: Number(s.price),
+      status: mapDbStatusToString(s.status),
+      row: s.row,
+      col: s.col,
+      polygonPoints: s.polygonPoints,
+      blockName: s.blockName,
+      assignedClientId: null,
+    }));
+
+    const { calculateAILotPricing } = await import('./src/utils/aiPricingEngine.js');
+    const result = calculateAILotPricing({
+      acquisitionCost,
+      civilWorksCost,
+      contractorLaborCost,
+      permittingOverheadCost: 65000,
+      contingencyPercent: Number(contingencyPercent) || 8,
+      targetProfitMargin: Number(targetProfitMargin) || 35,
+      slots,
+      parcel: parcel ? {
+        id: parcel.id,
+        name: parcel.name,
+        location: parcel.location,
+        totalAreaSqm: parcel.totalAreaSqm,
+        acquisitionCost: Number(parcel.purchaseCost),
+        subdividedSlotsCount: parcel.totalSlots,
+        acquisitionDate: parcel.acquisitionDate.toISOString().split('T')[0],
+      } : null,
+    });
+
+    res.json(result);
+  } catch (error) {
+    console.error('Error generating AI lot pricing suggestion:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// 3.8. POST /api/slots/apply-ai-pricing: Batch apply AI recommended prices to slots
+app.post('/api/slots/apply-ai-pricing', async (req, res) => {
+  const { updates, parcelId, targetMargin = 35, actorName, actorRole } = req.body;
+  try {
+    let count = 0;
+    if (Array.isArray(updates) && updates.length > 0) {
+      for (const item of updates) {
+        if (item.slotId && item.newBasePrice) {
+          await prisma.slot.update({
+            where: { id: item.slotId },
+            data: { price: Number(item.newBasePrice) }
+          });
+          count++;
+        }
+      }
+    }
+
+    await prisma.processAuditLog.create({
+      data: {
+        entityType: 'SLOT',
+        entityId: parcelId || 'PARCEL-CST',
+        action: 'AI_LOT_PRICING_APPLIED',
+        actorName: actorName || 'Operations Lead',
+        actorRole: actorRole || 'ADMIN',
+        details: `Applied AI Lot Pricing Model (${targetMargin}% target margin) to ${count} subdivided lots based on actual land acquisition and development expenses.`,
+      }
+    });
+
+    broadcastChange('slots');
+    broadcastChange('auditLogs');
+    res.json({ success: true, count, message: `Successfully updated pricing for ${count} lots.` });
+  } catch (error) {
+    console.error('Error applying AI pricing:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// ============================================================================
+// PROJECT MANAGEMENT SYSTEM (PMS) API ENDPOINTS
+// ============================================================================
+
+// A. Tasks CRUD
+app.post('/api/tasks', async (req, res) => {
+  const { title, description, assigneeName, assigneeRole, priority, status, dueDate, startDate, estimatedHours, category, milestonePhase, subtasks, tags } = req.body;
+  try {
+    const task = await prisma.projectTask.create({
+      data: {
+        title,
+        description,
+        assigneeName,
+        assigneeRole,
+        priority: priority || 'MEDIUM',
+        status: status || 'TODO',
+        dueDate: dueDate ? new Date(dueDate) : null,
+        startDate: startDate ? new Date(startDate) : null,
+        estimatedHours: Number(estimatedHours) || 0,
+        actualHours: 0,
+        category,
+        milestonePhase,
+        subtasksJson: subtasks ? JSON.stringify(subtasks) : null,
+        tags: Array.isArray(tags) ? tags.join(',') : tags || '',
+      }
+    });
+
+    await prisma.processAuditLog.create({
+      data: {
+        entityType: 'CIVIL_WORKS',
+        entityId: task.id,
+        action: 'TASK_CREATED',
+        actorName: 'Mauro R. Principe Jr.',
+        actorRole: 'ADMIN',
+        details: `Created task "${task.title}" assigned to ${task.assigneeName || 'team'}.`,
+      }
+    });
+
+    broadcastChange('tasks');
+    broadcastChange('auditLogs');
+    res.json(task);
+  } catch (error) {
+    console.error('Error creating task:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+app.patch('/api/tasks/:id', async (req, res) => {
+  const { id } = req.params;
+  const { status, priority, subtasks, actualHours, description } = req.body;
+  try {
+    const data: any = {};
+    if (status) data.status = status;
+    if (priority) data.priority = priority;
+    if (subtasks) data.subtasksJson = JSON.stringify(subtasks);
+    if (actualHours !== undefined) data.actualHours = Number(actualHours);
+    if (description !== undefined) data.description = description;
+
+    const task = await prisma.projectTask.update({
+      where: { id },
+      data,
+    });
+    broadcastChange('tasks');
+    res.json(task);
+  } catch (error) {
+    console.error('Error updating task:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+app.delete('/api/tasks/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    await prisma.projectTask.delete({ where: { id } });
+    broadcastChange('tasks');
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error deleting task:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// B. Daily Site Logs
+app.post('/api/site-logs', async (req, res) => {
+  const { weather, temperature, activeHeadcount, equipmentOnSite, toolboxTopic, workCompleted, delaysOrIssues, supervisorName } = req.body;
+  try {
+    const siteLog = await prisma.dailySiteLog.create({
+      data: {
+        date: new Date(),
+        weather: weather || 'SUNNY',
+        temperature,
+        activeHeadcount: Number(activeHeadcount) || 0,
+        equipmentOnSite,
+        toolboxTopic,
+        workCompleted,
+        delaysOrIssues,
+        supervisorName: supervisorName || 'Engr. Ricardo Gomez',
+      }
+    });
+
+    await prisma.processAuditLog.create({
+      data: {
+        entityType: 'CIVIL_WORKS',
+        entityId: siteLog.id,
+        action: 'DAILY_SITE_LOG_POSTED',
+        actorName: supervisorName || 'Engr. Ricardo Gomez',
+        actorRole: 'INSPECTOR',
+        details: `Recorded daily site diary (${weather}, ${activeHeadcount} workers).`,
+      }
+    });
+
+    broadcastChange('siteLogs');
+    broadcastChange('auditLogs');
+    res.json(siteLog);
+  } catch (error) {
+    console.error('Error creating site log:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// C. Documents DMS
+app.post('/api/documents', async (req, res) => {
+  const { title, category, fileUrl, fileSize, version, status, uploadedBy, notes } = req.body;
+  try {
+    const doc = await prisma.projectDocument.create({
+      data: {
+        title,
+        category: category || 'CAD_DRAWING',
+        fileUrl,
+        fileSize: fileSize || '2.4 MB',
+        version: version || '1.0',
+        status: status || 'APPROVED',
+        uploadedBy: uploadedBy || 'Mauro R. Principe Jr.',
+        notes,
+      }
+    });
+
+    await prisma.processAuditLog.create({
+      data: {
+        entityType: 'TITLING',
+        entityId: doc.id,
+        action: 'DOCUMENT_UPLOADED',
+        actorName: uploadedBy || 'Mauro R. Principe Jr.',
+        actorRole: 'ADMIN',
+        details: `Uploaded ${doc.category} document: "${doc.title}" (v${doc.version}).`,
+      }
+    });
+
+    broadcastChange('documents');
+    broadcastChange('auditLogs');
+    res.json(doc);
+  } catch (error) {
+    console.error('Error creating document:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// D. Project Risks
+app.post('/api/risks', async (req, res) => {
+  const { title, category, likelihood, impact, mitigationPlan, status, ownerName } = req.body;
+  try {
+    const score = (Number(likelihood) || 3) * (Number(impact) || 3);
+    const risk = await prisma.projectRisk.create({
+      data: {
+        title,
+        category: category || 'WEATHER',
+        likelihood: Number(likelihood) || 3,
+        impact: Number(impact) || 3,
+        riskScore: score,
+        mitigationPlan: mitigationPlan || '',
+        status: status || 'OPEN',
+        ownerName: ownerName || 'Engr. Ricardo Gomez',
+      }
+    });
+    broadcastChange('risks');
+    res.json(risk);
+  } catch (error) {
+    console.error('Error creating risk:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+app.patch('/api/risks/:id', async (req, res) => {
+  const { id } = req.params;
+  const { status, mitigationPlan } = req.body;
+  try {
+    const data: any = {};
+    if (status) data.status = status;
+    if (mitigationPlan) data.mitigationPlan = mitigationPlan;
+    const risk = await prisma.projectRisk.update({ where: { id }, data });
+    res.json(risk);
+  } catch (error) {
+    console.error('Error updating risk:', error);
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
@@ -761,6 +1823,9 @@ app.post('/api/slots/transition-status', async (req, res) => {
       }
     });
 
+    broadcastChange('slots');
+    broadcastChange('clients');
+    broadcastChange('auditLogs');
     res.json({
       slot: {
         ...updatedSlot,
@@ -775,17 +1840,27 @@ app.post('/api/slots/transition-status', async (req, res) => {
 
 // 5. POST /api/clients: Register new client profile with initial KYC & Title Tracker
 app.post('/api/clients', async (req, res) => {
-  const { id, name, email, contact, packageName, paymentPlan, totalContractPrice, registrationDate } = req.body;
+  const { id, name, email, contact, packageName, paymentPlan, totalContractPrice, slotId, registrationDate } = req.body;
   try {
     const inviteToken = crypto.randomBytes(24).toString('hex');
     const inviteTokenExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const cleanEmail = (email || '').trim().toLowerCase();
+    const cleanSlotId = slotId && typeof slotId === 'string' && slotId.trim().length > 0 ? slotId.trim() : null;
 
-    const user = await prisma.user.create({
-      data: {
+    const user = await prisma.user.upsert({
+      where: { email: cleanEmail },
+      update: {
+        name,
+        contact: contact || undefined,
+        inviteToken,
+        inviteTokenExpiry,
+        accountStatus: 'INVITED',
+      },
+      create: {
         id: id || `CLI-${Date.now().toString().slice(-4)}`,
         name,
-        email,
-        contact,
+        email: cleanEmail,
+        contact: contact || '',
         role: Role.CLIENT,
         accountStatus: 'INVITED',
         inviteToken,
@@ -794,19 +1869,36 @@ app.post('/api/clients', async (req, res) => {
       }
     });
 
-    const clientPackage = await prisma.clientPackage.create({
-      data: {
+    const clientPackage = await prisma.clientPackage.upsert({
+      where: { userId: user.id },
+      update: {
+        slotId: cleanSlotId,
+        price: totalContractPrice || 45000,
+        packageType: packageName || 'Standard Land Parcel Access Package',
+        paymentMethod: paymentPlan === 'Installment' ? PaymentMethod.INSTALLMENT : PaymentMethod.SPOT_CASH,
+      },
+      create: {
         userId: user.id,
-        slotId: '', // unassigned initially
+        slotId: cleanSlotId,
         price: totalContractPrice || 45000,
         packageType: packageName || 'Standard Land Parcel Access Package',
         paymentMethod: paymentPlan === 'Installment' ? PaymentMethod.INSTALLMENT : PaymentMethod.SPOT_CASH,
       }
     });
 
-    // Initialize full Government Titling Tracker
-    await prisma.titlePermitTracker.create({
-      data: {
+    // If slot is assigned, update slot status
+    if (cleanSlotId) {
+      await prisma.slot.updateMany({
+        where: { id: cleanSlotId },
+        data: { status: SlotStatus.RESERVED }
+      });
+    }
+
+    // Initialize or keep full Government Titling Tracker
+    await prisma.titlePermitTracker.upsert({
+      where: { clientPackageId: clientPackage.id },
+      update: {},
+      create: {
         clientPackageId: clientPackage.id,
         currentPhase: 'Reservation & Buyer KYC Verification',
         motherTitleVerified: true,
@@ -822,9 +1914,11 @@ app.post('/api/clients', async (req, res) => {
       }
     });
 
-    // Initialize Buyer KYC
-    await prisma.buyerKyc.create({
-      data: {
+    // Initialize or keep Buyer KYC
+    await prisma.buyerKyc.upsert({
+      where: { userId: user.id },
+      update: {},
+      create: {
         userId: user.id,
         govtIdVerified: false,
         tinVerified: false,
@@ -843,7 +1937,7 @@ app.post('/api/clients', async (req, res) => {
         action: 'CLIENT_REGISTERED',
         actorName: 'Operations Lead',
         actorRole: 'ADMIN',
-        details: `Registered buyer profile for ${user.name} (${user.email}).`,
+        details: `Registered buyer profile for ${user.name} (${user.email}). ${cleanSlotId ? `Assigned Lot: ${cleanSlotId}` : 'Pending lot assignment'}.`,
       }
     });
 
@@ -861,6 +1955,9 @@ app.post('/api/clients', async (req, res) => {
     });
 
     const mapped = await mapUserToClient(fullClientData);
+    broadcastChange('clients');
+    broadcastChange('slots');
+    broadcastChange('auditLogs');
     res.json(mapped);
   } catch (error) {
     console.error('Error registering client:', error);
@@ -872,30 +1969,202 @@ app.post('/api/clients', async (req, res) => {
 app.post('/api/clients/assign-slot', async (req, res) => {
   const { clientId, slotId } = req.body;
   try {
-    const clientPackage = await prisma.clientPackage.update({
-      where: { userId: clientId },
-      data: { slotId }
+    const user = await prisma.user.findFirst({
+      where: {
+        OR: [
+          { id: clientId },
+          { email: clientId.toLowerCase() }
+        ]
+      }
     });
 
-    const slot = await prisma.slot.update({
-      where: { id: slotId },
-      data: { status: SlotStatus.RESERVED }
+    if (!user) {
+      return res.status(404).json({ error: `Buyer record ${clientId} not found.` });
+    }
+
+    const cleanSlotId = slotId && typeof slotId === 'string' && slotId.trim().length > 0 ? slotId.trim() : null;
+
+    if (cleanSlotId) {
+      // Unlink this slot from any other client if previously bound
+      await prisma.clientPackage.updateMany({
+        where: { slotId: cleanSlotId, userId: { not: user.id } },
+        data: { slotId: null }
+      });
+    }
+
+    const clientPackage = await prisma.clientPackage.upsert({
+      where: { userId: user.id },
+      update: { slotId: cleanSlotId },
+      create: {
+        userId: user.id,
+        slotId: cleanSlotId,
+        price: 48000,
+        packageType: 'Cavinti Highland Crest Land Parcel',
+        paymentMethod: PaymentMethod.INSTALLMENT,
+      }
     });
+
+    let updatedSlot = null;
+    if (cleanSlotId) {
+      updatedSlot = await prisma.slot.update({
+        where: { id: cleanSlotId },
+        data: { status: SlotStatus.RESERVED }
+      });
+    }
 
     await prisma.processAuditLog.create({
       data: {
         entityType: 'SLOT',
-        entityId: slotId,
+        entityId: cleanSlotId || user.id,
         action: 'SLOT_RESERVED_FOR_CLIENT',
         actorName: 'Operations Lead',
         actorRole: 'ADMIN',
-        details: `Assigned Lot ${slotId} to buyer ${clientId}. Status set to RESERVED.`,
+        details: `Assigned Lot ${cleanSlotId || 'None'} to buyer ${user.name} (${user.id}). Status set to RESERVED.`,
       }
     });
 
-    res.json({ clientPackage, slot: { ...slot, status: mapDbStatusToString(slot.status) } });
+    broadcastChange('clients');
+    broadcastChange('slots');
+    broadcastChange('auditLogs');
+    res.json({ clientPackage, slot: updatedSlot ? { ...updatedSlot, status: mapDbStatusToString(updatedSlot.status) } : null });
   } catch (error) {
     console.error('Error assigning client to slot:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// 6.5. DELETE /api/clients/:id: Delete Client Account and Release Slot
+app.delete('/api/clients/:id', async (req, res) => {
+  const clientId = req.params.id;
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: clientId },
+      include: {
+        clientPackage: true,
+        buyerKyc: true,
+      }
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: `Client account ${clientId} not found.` });
+    }
+
+    const assignedSlotId = user.clientPackage?.slotId;
+
+    // 1. Release assigned slot back to AVAILABLE if bound
+    if (assignedSlotId) {
+      await prisma.slot.updateMany({
+        where: { id: assignedSlotId },
+        data: { status: SlotStatus.AVAILABLE }
+      });
+    }
+
+    // 2. Cascade delete dependent client records
+    if (user.clientPackage) {
+      await prisma.installmentLedger.deleteMany({
+        where: { clientPackageId: user.clientPackage.id }
+      });
+      await prisma.titlePermitTracker.deleteMany({
+        where: { clientPackageId: user.clientPackage.id }
+      });
+    }
+    await prisma.clientPackage.deleteMany({
+      where: { userId: user.id }
+    });
+
+    await prisma.buyerKyc.deleteMany({
+      where: { userId: user.id }
+    });
+
+    // 3. Delete user
+    await prisma.user.deleteMany({
+      where: { id: user.id }
+    });
+
+    // 4. Audit Log
+    await prisma.processAuditLog.create({
+      data: {
+        entityType: 'CLIENT',
+        entityId: clientId,
+        action: 'CLIENT_DELETED',
+        actorName: 'Operations Lead',
+        actorRole: 'ADMIN',
+        details: `Deleted buyer account ${user.name} (${user.email}). ${assignedSlotId ? `Released Lot ${assignedSlotId} back to AVAILABLE.` : ''}`,
+      }
+    });
+
+    broadcastChange('clients');
+    broadcastChange('slots');
+    broadcastChange('auditLogs');
+    res.json({ success: true, message: `Buyer account ${user.name} deleted successfully.` });
+  } catch (error) {
+    console.error('Error deleting client account:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// Also support POST /api/clients/delete for frontend compatibility
+app.post('/api/clients/delete', async (req, res) => {
+  const { clientId } = req.body;
+  if (!clientId) {
+    return res.status(400).json({ error: 'Client ID is required.' });
+  }
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: clientId },
+      include: {
+        clientPackage: true,
+        buyerKyc: true,
+      }
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: `Client account ${clientId} not found.` });
+    }
+
+    const assignedSlotId = user.clientPackage?.slotId;
+
+    if (assignedSlotId) {
+      await prisma.slot.updateMany({
+        where: { id: assignedSlotId },
+        data: { status: SlotStatus.AVAILABLE }
+      });
+    }
+
+    if (user.clientPackage) {
+      await prisma.installmentLedger.deleteMany({
+        where: { clientPackageId: user.clientPackage.id }
+      });
+      await prisma.titlePermitTracker.deleteMany({
+        where: { clientPackageId: user.clientPackage.id }
+      });
+    }
+    await prisma.clientPackage.deleteMany({
+      where: { userId: user.id }
+    });
+
+    await prisma.buyerKyc.deleteMany({
+      where: { userId: user.id }
+    });
+
+    await prisma.user.deleteMany({
+      where: { id: user.id }
+    });
+
+    await prisma.processAuditLog.create({
+      data: {
+        entityType: 'CLIENT',
+        entityId: clientId,
+        action: 'CLIENT_DELETED',
+        actorName: 'Operations Lead',
+        actorRole: 'ADMIN',
+        details: `Deleted buyer account ${user.name} (${user.email}). ${assignedSlotId ? `Released Lot ${assignedSlotId} back to AVAILABLE.` : ''}`,
+      }
+    });
+
+    res.json({ success: true, message: `Buyer account ${user.name} deleted successfully.` });
+  } catch (error) {
+    console.error('Error deleting client account:', error);
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
@@ -970,6 +2239,9 @@ app.post('/api/clients/update-title-pipeline', async (req, res) => {
       }
     });
 
+    broadcastChange('clients');
+    broadcastChange('slots');
+    broadcastChange('auditLogs');
     res.json({ ...updated, currentPhase });
   } catch (error) {
     console.error('Error updating titling pipeline:', error);
@@ -1013,6 +2285,8 @@ app.post('/api/clients/verify-kyc', async (req, res) => {
       }
     });
 
+    broadcastChange('clients');
+    broadcastChange('auditLogs');
     res.json(updatedKyc);
   } catch (error) {
     console.error('Error verifying buyer KYC:', error);
@@ -1061,6 +2335,9 @@ app.post('/api/clients/sign-acceptance', async (req, res) => {
       }
     });
 
+    broadcastChange('clients');
+    broadcastChange('slots');
+    broadcastChange('auditLogs');
     res.json({ success: true, message: 'Certificate of Acceptance signed and property handed over.' });
   } catch (error) {
     console.error('Error signing acceptance:', error);
@@ -1102,6 +2379,8 @@ app.post('/api/punch-lists', async (req, res) => {
       }
     });
 
+    broadcastChange('punchLists');
+    broadcastChange('auditLogs');
     res.json({
       id: defect.id,
       slotId: defect.slotId,
@@ -1152,6 +2431,8 @@ app.patch('/api/punch-lists/:id', async (req, res) => {
       }
     });
 
+    broadcastChange('punchLists');
+    broadcastChange('auditLogs');
     res.json({
       id: updated.id,
       slotId: updated.slotId,
@@ -1204,6 +2485,8 @@ app.post('/api/civil-works/update-milestone', async (req, res) => {
       }
     });
 
+    broadcastChange('civilMilestones');
+    broadcastChange('auditLogs');
     res.json({
       id: updated.id,
       parcelId: updated.parcelId,
@@ -1259,6 +2542,8 @@ app.post('/api/qa-logs', async (req, res) => {
       }
     });
 
+    broadcastChange('qaLogs');
+    broadcastChange('auditLogs');
     res.json({
       id: log.id,
       date: log.date.toISOString().split('T')[0],
@@ -1292,6 +2577,7 @@ app.post('/api/contractors/update-progress', async (req, res) => {
       });
       updatedContractors.push(updated);
     }
+    broadcastChange('contractors');
     res.json(updatedContractors);
   } catch (error) {
     console.error('Error syncing contractors:', error);
@@ -1392,6 +2678,9 @@ app.post('/api/manpower-audits', async (req, res) => {
       }
     });
 
+    broadcastChange('manpowerAudits');
+    broadcastChange('contractors');
+    broadcastChange('auditLogs');
     res.json(auditRecord);
   } catch (error) {
     console.error('Error recording manpower audit:', error);

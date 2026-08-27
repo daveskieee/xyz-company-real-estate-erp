@@ -23,6 +23,11 @@ export type SlotStatus =
   | 'Handed Over'
   | 'Sold';
 
+export interface SlotPoint {
+  x: number;
+  y: number;
+}
+
 export interface Slot {
   id: string; // e.g., "SLOT-01"
   parcelId: string;
@@ -32,6 +37,8 @@ export interface Slot {
   status: SlotStatus;
   row: number; // For the interactive grid render
   col: number; // For the interactive grid render
+  polygonPoints?: SlotPoint[] | string | null; // Vertex coordinates from AutoCAD/DXF
+  blockName?: string | null;
   assignedClientId: string | null;
 }
 
@@ -238,5 +245,120 @@ export interface UserSession {
   clientId?: string; // If role is 'Client'
   accountStatus?: 'INVITED' | 'ACTIVE' | 'SUSPENDED';
   token?: string;
+}
+
+// --- PROJECT MANAGEMENT SYSTEM (PMS) INTERFACES ---
+
+export type TaskPriority = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+export type TaskStatus = 'BACKLOG' | 'TODO' | 'IN_PROGRESS' | 'REVIEW' | 'COMPLETED' | 'BLOCKED';
+
+export interface TaskSubItem {
+  id: string;
+  title: string;
+  completed: boolean;
+}
+
+export interface ProjectTask {
+  id: string;
+  title: string;
+  description?: string;
+  assigneeName?: string;
+  assigneeRole?: string;
+  priority: TaskPriority;
+  status: TaskStatus;
+  dueDate?: string;
+  startDate?: string;
+  estimatedHours?: number;
+  actualHours?: number;
+  category?: string; // "CIVIL_WORKS" | "SURVEYING" | "PERMITTING" | "LEGAL" | "SALES" | "QA"
+  milestonePhase?: string; // e.g. "Phase A: Boundary Staking & Land Grading"
+  subtasks?: TaskSubItem[];
+  tags?: string[];
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface DailySiteLog {
+  id: string;
+  date: string;
+  weather: 'SUNNY' | 'OVERCAST' | 'RAINY' | 'STORM';
+  temperature?: string;
+  activeHeadcount: number;
+  equipmentOnSite?: string;
+  toolboxTopic?: string;
+  workCompleted: string;
+  delaysOrIssues?: string;
+  supervisorName: string;
+  createdAt?: string;
+}
+
+export interface ProjectDocument {
+  id: string;
+  title: string;
+  category: 'CAD_DRAWING' | 'PERMIT_DHSUD' | 'LGU_CLEARANCE' | 'STRUCTURAL_PLAN' | 'DEED_LEGAL' | 'OTHER';
+  fileUrl?: string;
+  fileSize?: string;
+  version: string;
+  status: 'APPROVED' | 'UNDER_REVIEW' | 'DRAFT' | 'ARCHIVED';
+  uploadedBy: string;
+  notes?: string;
+  createdAt?: string;
+}
+
+export interface ProjectRisk {
+  id: string;
+  title: string;
+  category: 'WEATHER' | 'REGULATORY' | 'SUPPLY_CHAIN' | 'TECHNICAL' | 'FINANCIAL' | 'LEGAL';
+  likelihood: number; // 1 to 5
+  impact: number; // 1 to 5
+  riskScore: number; // likelihood * impact
+  mitigationPlan: string;
+  status: 'OPEN' | 'MITIGATING' | 'RESOLVED';
+  ownerName: string;
+  createdAt?: string;
+}
+
+export interface ChangeOrder {
+  id: string;
+  orderNumber: string;
+  title: string;
+  contractorName: string;
+  requestedAmount: number;
+  approvedAmount?: number;
+  status: 'PENDING' | 'APPROVED' | 'REJECTED';
+  justification: string;
+  approvedBy?: string;
+  createdAt?: string;
+}
+
+// --- AUTOCAD / CAD PARSER INTERFACES ---
+
+export interface CADParsedLot {
+  slotNumber: number;
+  lotName?: string;
+  blockName?: string;
+  areaSqm: number;
+  points: SlotPoint[]; // Polygon boundary vertices
+  centerPoint: SlotPoint;
+  basePrice?: number;
+  rawLayer?: string;
+}
+
+export interface CADParseResult {
+  fileName: string;
+  fileType: 'DXF' | 'DWG' | 'GEOJSON' | 'SVG' | 'JSON';
+  totalLotsParsed: number;
+  totalAreaSqm: number;
+  layers: string[];
+  boundingBox: {
+    minX: number;
+    minY: number;
+    maxX: number;
+    maxY: number;
+    width: number;
+    height: number;
+  };
+  lots: CADParsedLot[];
+  rawLines?: { start: SlotPoint; end: SlotPoint; layer?: string }[];
 }
 

@@ -12,7 +12,7 @@ import {
 import { Client, Slot, QALog, CivilWorksMilestone, PunchListDefect } from '../types';
 
 interface ClientPortalProps {
-  client: Client;
+  client: Client | undefined;
   slots: Slot[];
   qaLogs: QALog[];
   civilWorksMilestones: CivilWorksMilestone[];
@@ -28,6 +28,19 @@ export default function ClientPortal({
   
   const [signedSuccess, setSignedSuccess] = useState<boolean>(false);
   const [showSignModal, setShowSignModal] = useState<boolean>(false);
+  const [showCertificateModal, setShowCertificateModal] = useState<boolean>(false);
+
+  // Guard: show loading state while client data is being fetched
+  if (!client) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+          <p className="text-slate-400 text-sm">Loading your account...</p>
+        </div>
+      </div>
+    );
+  }
 
   // Find assigned lot
   const assignedLot = slots.find(s => s.id === client.slotId);
@@ -35,7 +48,7 @@ export default function ClientPortal({
   // Find QA logs for this lot
   const lotQaLogs = qaLogs.filter(q => q.slotId === client.slotId);
 
-  const tm = client.titleMilestones;
+  const tm = client.titleMilestones ?? {};
   const kyc = client.buyerKyc;
 
   // Calculate titling steps completed
@@ -141,12 +154,21 @@ export default function ClientPortal({
         )}
 
         {isHandedOver && (
-          <div className="bg-emerald-950/80 border border-emerald-600 rounded-2xl p-5 flex items-center gap-3 text-emerald-200 text-xs shadow-md">
-            <CheckCircle2 className="w-6 h-6 text-emerald-400 shrink-0" />
-            <div>
-              <strong className="text-white text-sm block">Property Officially Handed Over & Released</strong>
-              <span>Certificate of Lot Acceptance signed. Physical boundaries, markers, and title documentation released.</span>
+          <div className="bg-emerald-950/80 border border-emerald-600 rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 text-emerald-200 text-xs shadow-md animate-fadeIn">
+            <div className="flex items-center gap-3">
+              <CheckCircle2 className="w-6 h-6 text-emerald-400 shrink-0" />
+              <div>
+                <strong className="text-white text-sm block">Property Officially Handed Over & Released</strong>
+                <span>Certificate of Lot Acceptance signed. Physical boundaries, markers, and title documentation released.</span>
+              </div>
             </div>
+            <button
+              onClick={() => setShowCertificateModal(true)}
+              className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl shadow-md cursor-pointer transition-all flex items-center justify-center gap-2 shrink-0"
+            >
+              <Award className="w-4 h-4 text-amber-300" />
+              <span>View Official Certificate</span>
+            </button>
           </div>
         )}
 
@@ -415,6 +437,116 @@ export default function ClientPortal({
                   ✓ Execute Acceptance Sign-Off
                 </button>
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* Modal: View Official Certificate of Lot Acceptance */}
+        {showCertificateModal && (
+          <div className="fixed inset-0 bg-black/85 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6 z-50 animate-fadeIn overflow-y-auto">
+            <div className="bg-slate-950 border border-emerald-600/80 rounded-3xl max-w-2xl w-full p-6 sm:p-8 space-y-6 shadow-2xl my-auto text-slate-100 relative">
+              <button 
+                onClick={() => setShowCertificateModal(false)} 
+                className="absolute top-5 right-5 text-slate-400 hover:text-white p-2 rounded-lg hover:bg-slate-850 cursor-pointer"
+              >
+                ✕
+              </button>
+
+              {/* Certificate Header with Crest */}
+              <div className="text-center space-y-2 border-b border-slate-800 pb-5">
+                <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-emerald-600 to-teal-500 flex items-center justify-center mx-auto shadow-lg shadow-emerald-500/20 text-white">
+                  <Award className="w-8 h-8" />
+                </div>
+                <div className="text-[10px] uppercase font-mono tracking-widest text-emerald-400 font-bold">
+                  Republic of the Philippines • Province of Laguna
+                </div>
+                <h2 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight">
+                  Certificate of Lot Acceptance & Physical Handover
+                </h2>
+                <p className="text-xs text-slate-400 font-mono">
+                  Cavinti Highland Crest Subdivision • Land Development Registry
+                </p>
+              </div>
+
+              {/* Certificate Body Details */}
+              <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 space-y-4 text-xs">
+                <p className="leading-relaxed text-slate-200">
+                  This is to officially certify that <strong className="text-white font-bold">{client.name}</strong>, with Buyer Account ID <strong className="text-emerald-400 font-mono">{client.id}</strong>, has formally accepted and received full physical and legal possession of the following real estate parcel:
+                </p>
+
+                <div className="grid grid-cols-2 gap-3 bg-slate-950 p-4 rounded-xl border border-slate-800 font-mono text-[11px]">
+                  <div>
+                    <span className="text-slate-500 block text-[10px]">LOT IDENTIFIER</span>
+                    <strong className="text-white text-xs">{assignedLot?.id || 'SLOT-08'} (Lot #{assignedLot?.slotNumber || '8'})</strong>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 block text-[10px]">LOT AREA</span>
+                    <strong className="text-white text-xs">{assignedLot?.areaSqm || 500} Sq. Meters</strong>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 block text-[10px]">REGISTRY OF DEEDS TCT</span>
+                    <strong className="text-emerald-400 text-xs">{tm.tctNumber || 'TCT-2026-0049182-RD-LAGUNA'}</strong>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 block text-[10px]">TAX DECLARATION NO.</span>
+                    <strong className="text-purple-300 text-xs">{tm.taxDecNumber || 'TD-2026-CVNT-9982-A'}</strong>
+                  </div>
+                </div>
+
+                <div className="space-y-2 text-slate-300 text-[11px] leading-relaxed">
+                  <div className="flex items-center gap-2 text-emerald-300 font-semibold">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <span>Geodetic Concrete Boundary Stakes Inspected & Verified</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-emerald-300 font-semibold">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <span>LGU & DHSUD Permitted Access Road Connected</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-emerald-300 font-semibold">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <span>Zero Outstanding Critical Punch-List Defects</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Signatures & Execution Timestamp */}
+              <div className="grid grid-cols-2 gap-4 pt-2 border-t border-slate-800 text-[11px]">
+                <div className="bg-slate-900/50 p-3 rounded-xl border border-slate-800/80">
+                  <span className="text-slate-400 block text-[10px]">AUTHORIZED DEVELOPER SIGNATORY</span>
+                  <strong className="text-white block mt-1">Mauro Principe Jr.</strong>
+                  <span className="text-slate-500 text-[10px]">Chief Operating Officer • XYZ Realty Corp.</span>
+                </div>
+                <div className="bg-slate-900/50 p-3 rounded-xl border border-slate-800/80">
+                  <span className="text-slate-400 block text-[10px]">BUYER CONFORME & SIGN-OFF</span>
+                  <strong className="text-emerald-400 block mt-1">{client.name}</strong>
+                  <span className="text-slate-500 text-[10px]">Signed & Verified Digitally</span>
+                </div>
+              </div>
+
+              {/* Actions Footer */}
+              <div className="flex items-center justify-between pt-2">
+                <span className="text-[10px] font-mono text-slate-500">
+                  HASH: {client.id}-TCT-CONVEYANCE-2026-VERIFIED
+                </span>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => window.print()}
+                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold cursor-pointer shadow-md transition-all flex items-center gap-1.5"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Print / Save PDF</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowCertificateModal(false)}
+                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold cursor-pointer"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+
             </div>
           </div>
         )}

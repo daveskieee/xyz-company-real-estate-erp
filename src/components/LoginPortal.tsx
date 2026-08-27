@@ -460,22 +460,9 @@ export default function LoginPortal({ onLoginSuccess, onBackToLanding, initialIn
 
                   {/* Token Input with Auto-Lookup */}
                   <div>
-                    <div className="flex justify-between items-center mb-1">
-                      <label className="text-slate-300 font-semibold">
-                        Handover Activation Token
-                      </label>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setInviteToken('demo-handover-token-2026');
-                          verifyToken('demo-handover-token-2026');
-                        }}
-                        className="text-[10px] text-emerald-400 hover:underline cursor-pointer"
-                      >
-                        Paste Demo Token
-                      </button>
-                    </div>
-
+                    <label className="block text-slate-300 font-semibold mb-1">
+                      Handover Activation Token
+                    </label>
                     <div className="relative">
                       <Ticket className="absolute left-3 top-2.5 w-4 h-4 text-slate-500" />
                       <input
@@ -489,7 +476,7 @@ export default function LoginPortal({ onLoginSuccess, onBackToLanding, initialIn
                           }
                         }}
                         onBlur={() => verifyToken(inviteToken)}
-                        placeholder="e.g. 3a7f8b92c4e..."
+                        placeholder="Enter 48-character token or open activation email link"
                         className="w-full bg-slate-950 border border-slate-700 rounded-lg pl-9 pr-9 py-2 text-white font-mono text-xs placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
                       />
                       {isVerifyingToken && (
@@ -618,23 +605,6 @@ export default function LoginPortal({ onLoginSuccess, onBackToLanding, initialIn
                   </div>
                 </div>
                 <ArrowUpRight className="w-4 h-4 text-teal-400 group-hover:translate-x-0.5 transition-transform" />
-              </button>
-
-              <button
-                type="button"
-                onClick={() => selectAndLoginPreset('davematthewreglos@gmail.com', 'client123')}
-                className="w-full flex items-center justify-between p-2 rounded-xl border border-amber-900/60 bg-amber-950/30 hover:bg-amber-900/50 text-left transition-all cursor-pointer group"
-              >
-                <div className="flex items-center gap-2.5">
-                  <div className="bg-amber-600 text-white p-1.5 rounded-lg">
-                    <User className="w-3.5 h-3.5" />
-                  </div>
-                  <div>
-                    <span className="text-xs font-bold text-white block">Dave Matthew Reglos</span>
-                    <span className="text-[10px] text-amber-300 font-mono">Client VIP • Slot 03 Cavinti</span>
-                  </div>
-                </div>
-                <ArrowUpRight className="w-4 h-4 text-amber-400 group-hover:translate-x-0.5 transition-transform" />
               </button>
             </div>
           </div>

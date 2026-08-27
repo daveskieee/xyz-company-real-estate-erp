@@ -90,6 +90,8 @@ model Slot {
   status       SlotStatus @default(AVAILABLE)
   row          Int        // Grid Row coordinate for frontend visualization
   col          Int        // Grid Column coordinate for frontend visualization
+  polygonPoints String?   @db.Text // JSON string of [{x,y}, ...] vertices from AutoCAD
+  blockName    String?    // e.g., "Block 1", "Block 2", "Sector A"
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
 
@@ -236,7 +238,7 @@ model BuyerKyc {
 model ClientPackage {
   id            String        @id @default(uuid())
   userId        String        @unique // Role.CLIENT User
-  slotId        String        @unique // Selected Slot
+  slotId        String?       @unique // Selected Slot (Optional if unassigned)
   price         Decimal       @db.Decimal(12, 2) // totalContractPrice
   packageType   String        // e.g., "Standard Package (Land + Road Dev)"
   paymentMethod PaymentMethod @default(INSTALLMENT)
@@ -245,7 +247,7 @@ model ClientPackage {
 
   // Relationships
   user                User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
-  slot                Slot                 @relation(fields: [slotId], references: [id], onDelete: Restrict)
+  slot                Slot?                @relation(fields: [slotId], references: [id], onDelete: SetNull)
   installmentLedgers  InstallmentLedger[]
   titlePermitTracker  TitlePermitTracker?
 
@@ -338,4 +340,107 @@ model PayrollRecord {
   updatedAt        DateTime         @updatedAt
 
   @@map("payroll_records")
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum TaskStatus {
+  BACKLOG
+  TODO
+  IN_PROGRESS
+  REVIEW
+  COMPLETED
+  BLOCKED
+}
+
+model ProjectTask {
+  id             String       @id @default(uuid())
+  title          String
+  description    String?      @db.Text
+  assigneeName   String?
+  assigneeRole   String?
+  priority       TaskPriority @default(MEDIUM)
+  status         TaskStatus   @default(TODO)
+  dueDate        DateTime?
+  startDate      DateTime?
+  estimatedHours Float?       @default(0)
+  actualHours    Float?       @default(0)
+  category       String?      // "CIVIL_WORKS", "SURVEYING", "PERMITTING", "LEGAL", "SALES", "QA"
+  milestonePhase String?      // e.g., "Phase A", "Phase B"
+  subtasksJson   String?      @db.Text // JSON string: [{id, title, completed}]
+  tags           String?      // comma-separated tags
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@map("project_tasks")
+}
+
+model DailySiteLog {
+  id               String   @id @default(uuid())
+  date             DateTime @default(now())
+  weather          String   // "SUNNY", "OVERCAST", "RAINY", "STORM"
+  temperature      String?  // e.g., "31°C"
+  activeHeadcount  Int      @default(0)
+  equipmentOnSite  String?  @db.Text // e.g., "1x Cat Excavator, 1x Road Roller, 2x Dump Trucks"
+  toolboxTopic     String?  // Safety meeting topic
+  workCompleted    String   @db.Text
+  delaysOrIssues   String?  @db.Text
+  supervisorName   String
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@map("daily_site_logs")
+}
+
+model ProjectDocument {
+  id           String   @id @default(uuid())
+  title        String
+  category     String   // "CAD_DRAWING", "PERMIT_DHSUD", "LGU_CLEARANCE", "STRUCTURAL_PLAN", "DEED_LEGAL"
+  fileUrl      String?  @db.Text
+  fileSize     String?
+  version      String   @default("1.0")
+  status       String   @default("APPROVED") // "APPROVED", "UNDER_REVIEW", "DRAFT", "ARCHIVED"
+  uploadedBy   String
+  notes        String?  @db.Text
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@map("project_documents")
+}
+
+model ProjectRisk {
+  id             String   @id @default(uuid())
+  title          String
+  category       String   // "WEATHER", "REGULATORY", "SUPPLY_CHAIN", "TECHNICAL", "FINANCIAL"
+  likelihood     Int      @default(3) // 1-5
+  impact         Int      @default(3) // 1-5
+  riskScore      Int      @default(9) // likelihood * impact
+  mitigationPlan String   @db.Text
+  status         String   @default("OPEN") // "OPEN", "MITIGATING", "RESOLVED"
+  ownerName      String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@map("project_risks")
+}
+
+model ChangeOrder {
+  id              String   @id @default(uuid())
+  orderNumber     String   @unique // e.g., "CO-2026-001"
+  title           String
+  contractorName  String
+  requestedAmount Decimal  @db.Decimal(12, 2)
+  approvedAmount  Decimal? @db.Decimal(12, 2)
+  status          String   @default("PENDING") // "PENDING", "APPROVED", "REJECTED"
+  justification   String   @db.Text
+  approvedBy      String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@map("change_orders")
 }
