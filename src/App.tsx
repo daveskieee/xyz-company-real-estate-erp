@@ -8,13 +8,12 @@ import {
   LandParcel, Slot, Client, QALog, Contractor, PayrollRecord, 
   CompanyBudget, UserSession, PunchListDefect, CivilWorksMilestone, ProcessAuditLog, DailyManpowerAudit,
   LaborAllocation, AIManpowerRecommendation, ProjectTask, DailySiteLog, ProjectDocument, ProjectRisk,
-  ChangeOrder, CADParsedLot, TaskStatus
+  ChangeOrder, CADParsedLot, TaskStatus, GovernmentPermit, ScheduleEvent,
+  ProjectProfile, ExtendedPayrollItem
 } from './types';
 import LandingPage from './components/LandingPage';
 import LoginPortal from './components/LoginPortal';
 import AdminPortal from './components/AdminPortal';
-import InspectorPortal from './components/InspectorPortal';
-import ClientPortal from './components/ClientPortal';
 import LoadingScreen from './components/LoadingScreen';
 
 export default function App() {
@@ -41,6 +40,10 @@ export default function App() {
   const [documents, setDocuments] = useState<ProjectDocument[]>([]);
   const [risks, setRisks] = useState<ProjectRisk[]>([]);
   const [changeOrders, setChangeOrders] = useState<ChangeOrder[]>([]);
+  const [permits, setPermits] = useState<GovernmentPermit[]>([]);
+  const [scheduleEvents, setScheduleEvents] = useState<ScheduleEvent[]>([]);
+  const [projects, setProjects] = useState<ProjectProfile[]>([]);
+  const [extendedPayroll, setExtendedPayroll] = useState<ExtendedPayrollItem[]>([]);
 
   // Active Session context: 
   // null = Landing Page 
@@ -76,7 +79,35 @@ export default function App() {
         const saved = localStorage.getItem('xyz_pm_user_session') || localStorage.getItem('xyz_erp_user_session');
         if (saved) {
           try {
-            setSession(JSON.parse(saved));
+            const parsed = JSON.parse(saved);
+            setSession(parsed);
+
+            // Re-sync with latest PostgreSQL database profile in background
+            const q = parsed.id ? `?userId=${encodeURIComponent(parsed.id)}` : parsed.email ? `?email=${encodeURIComponent(parsed.email)}` : '';
+            fetch(`/api/auth/profile${q}`)
+              .then(res => res.ok ? res.json() : null)
+              .then(data => {
+                if (data?.profile) {
+                  const p = data.profile;
+                  setSession(prev => {
+                    if (typeof prev === 'object' && prev !== null) {
+                      const updated = {
+                        ...prev,
+                        name: p.name || prev.name,
+                        email: p.email || prev.email,
+                        avatarUrl: p.avatarUrl !== undefined ? p.avatarUrl : prev.avatarUrl,
+                        title: p.title || prev.title,
+                        phone: p.contact || prev.phone,
+                        division: p.division || prev.division,
+                      };
+                      localStorage.setItem('xyz_pm_user_session', JSON.stringify(updated));
+                      return updated;
+                    }
+                    return prev;
+                  });
+                }
+              })
+              .catch(() => {});
           } catch {
             localStorage.removeItem('xyz_pm_user_session');
             localStorage.removeItem('xyz_erp_user_session');
@@ -147,6 +178,48 @@ export default function App() {
     } catch { /* silent */ }
   }, []);
 
+  const fetchDocuments = useCallback(async () => {
+    try {
+      const res = await fetch('/api/documents');
+      if (res.ok) setDocuments(await res.json());
+    } catch { /* silent */ }
+  }, []);
+
+  const fetchSiteLogs = useCallback(async () => {
+    try {
+      const res = await fetch('/api/site-logs');
+      if (res.ok) setSiteLogs(await res.json());
+    } catch { /* silent */ }
+  }, []);
+
+  const fetchPermits = useCallback(async () => {
+    try {
+      const res = await fetch('/api/permits');
+      if (res.ok) setPermits(await res.json());
+    } catch { /* silent */ }
+  }, []);
+
+  const fetchSchedule = useCallback(async () => {
+    try {
+      const res = await fetch('/api/schedule');
+      if (res.ok) setScheduleEvents(await res.json());
+    } catch { /* silent */ }
+  }, []);
+
+  const fetchProjects = useCallback(async () => {
+    try {
+      const res = await fetch('/api/projects');
+      if (res.ok) setProjects(await res.json());
+    } catch { /* silent */ }
+  }, []);
+
+  const fetchExtendedPayroll = useCallback(async () => {
+    try {
+      const res = await fetch('/api/extended-payroll');
+      if (res.ok) setExtendedPayroll(await res.json());
+    } catch { /* silent */ }
+  }, []);
+
   // --- PERSISTENCE STATE SYNCHRONIZER (FETCH FROM DB) ---
   // Used for initial page load only. After that, SSE + granular fetches handle updates.
   const reloadAllData = async () => {
@@ -164,14 +237,18 @@ export default function App() {
       setAuditLogs(data.auditLogs || []);
       setPayroll(data.payroll || []);
       setBudget(data.budget || null);
-      if (data.manpowerAudits && data.manpowerAudits.length > 0) {
-        setManpowerAudits(data.manpowerAudits);
-      }
+      setManpowerAudits(data.manpowerAudits || []);
+      setLaborAllocations(data.laborAllocations || []);
+      setAiRecommendations(data.aiRecommendations || []);
       setTasks(data.tasks || []);
       setSiteLogs(data.siteLogs || []);
       setDocuments(data.documents || []);
       setRisks(data.risks || []);
       setChangeOrders(data.changeOrders || []);
+      setPermits(data.permits || []);
+      setScheduleEvents(data.scheduleEvents || []);
+      setProjects(data.projects || []);
+      setExtendedPayroll(data.extendedPayroll || []);
     } catch (err) {
       console.error('Failed to load data from database:', err);
     }
@@ -212,12 +289,12 @@ export default function App() {
           case 'payroll':    fetchPayroll(); break;
           case 'tasks':      fetchTasks(); break;
           case 'contractors': fetchContractors(); break;
-          case 'siteLogs':
-            // Site logs not on a granular endpoint — just part of all-data, skip heavy reload
-            break;
-          case 'documents':
-            // Documents not on a granular endpoint — skip
-            break;
+          case 'siteLogs':   fetchSiteLogs(); break;
+          case 'documents':  fetchDocuments(); break;
+          case 'permits':    fetchPermits(); break;
+          case 'schedule':   fetchSchedule(); break;
+          case 'projects':   fetchProjects(); break;
+          case 'extendedPayroll': fetchExtendedPayroll(); break;
           case 'risks':
             // Risks not on a granular endpoint — skip
             break;
@@ -239,7 +316,7 @@ export default function App() {
       if (sseReconnectTimer.current) clearTimeout(sseReconnectTimer.current);
       sseReconnectTimer.current = setTimeout(connectSSE, 3000);
     };
-  }, [fetchClients, fetchSlots, fetchPunchLists, fetchCivilMilestones, fetchAuditLogs, fetchPayroll, fetchTasks, fetchContractors]);
+  }, [fetchClients, fetchSlots, fetchPunchLists, fetchCivilMilestones, fetchAuditLogs, fetchPayroll, fetchTasks, fetchContractors, fetchSiteLogs, fetchDocuments, fetchPermits, fetchSchedule, fetchProjects, fetchExtendedPayroll]);
 
   useEffect(() => {
     connectSSE();
@@ -269,6 +346,17 @@ export default function App() {
       pendingSession: currentSession,
     });
   };
+
+  const handleUpdateSession = useCallback((updated: Partial<UserSession>) => {
+    setSession(prev => {
+      if (typeof prev === 'object' && prev !== null) {
+        const merged = { ...prev, ...updated };
+        localStorage.setItem('xyz_pm_user_session', JSON.stringify(merged));
+        return merged;
+      }
+      return prev;
+    });
+  }, []);
 
   // --- CHRONOLOGICAL DATA MUTATORS (with Optimistic UI Updates) ---
   // Pattern: update state instantly → call API → reconcile with server data
@@ -627,7 +715,23 @@ export default function App() {
     }
   };
 
-  // 11. Contractor Roster
+  const handleSyncSchedule = async (tasks: any[]) => {
+    try {
+      const res = await fetch('/api/civil-works/sync-schedule', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tasks }),
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        setCivilWorksMilestones(updated);
+      }
+    } catch (e) {
+      console.error('Error syncing schedule:', e);
+    }
+  };
+
+  // 11. Contractor & Workforce Roster
   const handleRegisterContractor = async (contractor: Contractor) => {
     setContractors(prev => [...prev, contractor]);
     try {
@@ -636,12 +740,30 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(contractor)
       });
-      if (!res.ok) {
+      if (res.ok) {
+        const saved = await res.json();
+        setContractors(prev => prev.map(c => c.id === contractor.id ? saved : c));
+      } else {
         setContractors(prev => prev.filter(c => c.id !== contractor.id));
       }
     } catch (err) {
       setContractors(prev => prev.filter(c => c.id !== contractor.id));
       console.error('Error registering contractor:', err);
+    }
+  };
+
+  const handleDeleteContractor = async (contractorId: string) => {
+    setContractors(prev => prev.filter(c => c.id !== contractorId));
+    try {
+      const res = await fetch(`/api/contractors/${contractorId}`, {
+        method: 'DELETE'
+      });
+      if (!res.ok) {
+        fetchContractors();
+      }
+    } catch (err) {
+      fetchContractors();
+      console.error('Error deleting contractor/worker:', err);
     }
   };
 
@@ -740,7 +862,7 @@ export default function App() {
   };
 
   // 15. Manual Labor Allocation Update
-  const handleSaveAllocation = (alloc: LaborAllocation) => {
+  const handleSaveAllocation = async (alloc: LaborAllocation) => {
     setLaborAllocations(prev => {
       const exists = prev.some(a => a.id === alloc.id);
       if (exists) {
@@ -756,10 +878,20 @@ export default function App() {
       }
       return c;
     }));
+
+    try {
+      await fetch('/api/labor-allocations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(alloc)
+      });
+    } catch (err) {
+      console.error('Failed to sync labor allocation to database:', err);
+    }
   };
 
   // 16. Apply AI Labor Optimization Recommendation
-  const handleApplyAIRecommendation = (recId: string) => {
+  const handleApplyAIRecommendation = async (recId: string) => {
     const rec = aiRecommendations.find(r => r.id === recId);
     if (!rec) return;
 
@@ -797,6 +929,16 @@ export default function App() {
 
     // Update contractor headcount
     setContractors(prev => prev.map(c => c.id === rec.contractorId ? { ...c, activeManpower: rec.recommendedHeadcount } : c));
+
+    try {
+      await fetch('/api/labor-allocations/apply-ai-rec', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recId })
+      });
+    } catch (err) {
+      console.error('Failed to sync AI recommendation to database:', err);
+    }
   };
 
   // --- AUTOCAD & PMS SUITE HANDLERS ---
@@ -897,6 +1039,33 @@ export default function App() {
     }
   };
 
+  const handleUpdateDocument = async (id: string, docData: Partial<ProjectDocument>) => {
+    try {
+      const res = await fetch(`/api/documents/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(docData),
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        setDocuments(prev => prev.map(d => d.id === id ? updated : d));
+      }
+    } catch (e) {
+      console.error('Failed to update document:', e);
+    }
+  };
+
+  const handleDeleteDocument = async (id: string) => {
+    try {
+      const res = await fetch(`/api/documents/${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        setDocuments(prev => prev.filter(d => d.id !== id));
+      }
+    } catch (e) {
+      console.error('Failed to delete document:', e);
+    }
+  };
+
   const handleAddRisk = async (riskData: Omit<ProjectRisk, 'id' | 'createdAt'>) => {
     try {
       const res = await fetch('/api/risks', {
@@ -953,6 +1122,178 @@ export default function App() {
     }
   };
 
+  const handleRecordPayment = async (paymentData: any) => {
+    const res = await fetch('/api/payments/record', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(paymentData)
+    });
+    if (!res.ok) throw new Error('Failed to record payment');
+    await fetchClients();
+    await fetchAuditLogs();
+  };
+
+  const handleDisbursePayroll = async (id?: string, all?: boolean) => {
+    const res = await fetch('/api/payroll/disburse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, all })
+    });
+    if (!res.ok) throw new Error('Failed to disburse payroll');
+    await fetchPayroll();
+    await fetchAuditLogs();
+  };
+
+  const handleAddPermit = async (permitData: Partial<GovernmentPermit>) => {
+    const res = await fetch('/api/permits', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(permitData)
+    });
+    if (!res.ok) throw new Error('Failed to file permit');
+    await fetchPermits();
+    await fetchAuditLogs();
+  };
+
+  const handleUpdatePermitStatus = async (permitId: string, status: any, notes?: string) => {
+    const res = await fetch(`/api/permits/${permitId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status, notes })
+    });
+    if (!res.ok) throw new Error('Failed to update permit');
+    await fetchPermits();
+  };
+
+  const handleDeletePermit = async (permitId: string) => {
+    const res = await fetch(`/api/permits/${permitId}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('Failed to delete permit');
+    await fetchPermits();
+  };
+
+  const handleAddScheduleEvent = async (eventData: Partial<ScheduleEvent>) => {
+    const res = await fetch('/api/schedule', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(eventData)
+    });
+    if (!res.ok) throw new Error('Failed to create schedule event');
+    await fetchSchedule();
+    await fetchAuditLogs();
+  };
+
+  const handleUpdatePermit = async (permitId: string, updates: Partial<GovernmentPermit>) => {
+    const res = await fetch(`/api/permits/${permitId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates)
+    });
+    if (!res.ok) throw new Error('Failed to update permit');
+    await fetchPermits();
+  };
+
+  const handleUpdateScheduleEvent = async (eventId: string, updates: Partial<ScheduleEvent>) => {
+    const res = await fetch(`/api/schedule/${eventId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates)
+    });
+    if (!res.ok) throw new Error('Failed to update schedule event');
+    await fetchSchedule();
+  };
+
+  const handleDeleteScheduleEvent = async (eventId: string) => {
+    const res = await fetch(`/api/schedule/${eventId}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('Failed to delete schedule event');
+    await fetchSchedule();
+  };
+
+  const handleCreateProject = async (projectData: Partial<ProjectProfile>) => {
+    try {
+      const res = await fetch('/api/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(projectData)
+      });
+      if (res.ok) {
+        const created = await res.json();
+        setProjects(prev => [created, ...prev]);
+      }
+    } catch (err) {
+      console.error('Failed to create project:', err);
+    }
+  };
+
+  const handleUpdateProject = async (id: string, updates: Partial<ProjectProfile>) => {
+    try {
+      const res = await fetch(`/api/projects/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates)
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        setProjects(prev => prev.map(p => p.id === id ? { ...p, ...updated } : p));
+      }
+    } catch (err) {
+      console.error('Failed to update project:', err);
+    }
+  };
+
+  const handleDeleteProject = async (id: string) => {
+    try {
+      const res = await fetch(`/api/projects/${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        setProjects(prev => prev.filter(p => p.id !== id));
+      }
+    } catch (err) {
+      console.error('Failed to delete project:', err);
+    }
+  };
+
+  const handleAddExtendedPayroll = async (item: Partial<ExtendedPayrollItem>) => {
+    try {
+      const res = await fetch('/api/extended-payroll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(item)
+      });
+      if (res.ok) {
+        const created = await res.json();
+        setExtendedPayroll(prev => [created, ...prev]);
+      }
+    } catch (err) {
+      console.error('Failed to add payroll entry:', err);
+    }
+  };
+
+  const handleUpdateExtendedPayroll = async (id: string, updates: Partial<ExtendedPayrollItem>) => {
+    try {
+      const res = await fetch(`/api/extended-payroll/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates)
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        setExtendedPayroll(prev => prev.map(p => p.id === id ? { ...p, ...updated } : p));
+      }
+    } catch (err) {
+      console.error('Failed to update payroll entry:', err);
+    }
+  };
+
+  const handleDeleteExtendedPayroll = async (id: string) => {
+    try {
+      const res = await fetch(`/api/extended-payroll/${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        setExtendedPayroll(prev => prev.filter(p => p.id !== id));
+      }
+    } catch (err) {
+      console.error('Failed to delete payroll entry:', err);
+    }
+  };
+
   // --- RENDERING ROUTER ---
 
   const renderActiveWorkspace = () => {
@@ -970,109 +1311,83 @@ export default function App() {
       );
     }
 
-    // Admin Portal
-    if (session.role === 'Admin') {
-      return (
-        <div className="animate-fadeIn">
-          <AdminPortal
-            parcels={parcels}
-            slots={slots}
-            clients={clients}
-            contractors={contractors}
-            qaLogs={qaLogs}
-            punchListDefects={punchListDefects}
-            civilWorksMilestones={civilWorksMilestones}
-            auditLogs={auditLogs}
-            payroll={payroll}
-            budget={budget || {
-              initialCapital: 1000000,
-              landAcquisitionCost: 0,
-              subdevelopmentCostPaid: 0,
-              collectedInstallments: 0,
-              currentCashReserve: 1000000,
-              roadInfrastructureFee: 0,
-              nextHectareCost: 500000,
-            }}
-            manpowerAudits={manpowerAudits}
-            laborAllocations={laborAllocations}
-            aiRecommendations={aiRecommendations}
-            tasks={tasks}
-            siteLogs={siteLogs}
-            documents={documents}
-            risks={risks}
-            changeOrders={changeOrders}
-            onAddParcel={handleAddParcel}
-            onDeleteParcel={handleDeleteParcel}
-            onSubdivideParcel={handleSubdivideParcel}
-            onRegisterClient={handleRegisterClient}
-            onDeleteClient={handleDeleteClient}
-            onAssignClient={handleAssignClient}
-            onTransitionSlotStatus={handleTransitionSlotStatus}
-            onUpdateTitlePipeline={handleUpdateTitlePipeline}
-            onVerifyKyc={handleVerifyKyc}
-            onCreateDefect={handleCreateDefect}
-            onUpdateDefect={handleUpdateDefect}
-            onUpdateCivilMilestone={handleUpdateCivilMilestone}
-            onRegisterContractor={handleRegisterContractor}
-            onUpdateContractors={handleUpdateContractors}
-            onAddQALog={handleAddQALog}
-            onAddPayroll={handleAddPayroll}
-            onCreateManpowerAudit={handleCreateManpowerAudit}
-            onSaveAllocation={handleSaveAllocation}
-            onApplyAIRecommendation={handleApplyAIRecommendation}
-            onAddTask={handleAddTask}
-            onUpdateTaskStatus={handleUpdateTaskStatus}
-            onAddSiteLog={handleAddSiteLog}
-            onAddDocument={handleAddDocument}
-            onAddRisk={handleAddRisk}
-            onImportCADLots={handleImportCADLots}
-            onClearAllLots={handleClearAllLots}
-            onApplyAIPricing={handleApplyAIPricing}
-            onLogout={handleInitiateLogout}
-          />
-        </div>
-      );
-    }
+    // All authenticated users route directly into CTVill Project Management Operations Portal
 
-    // Inspector Portal
-    if (session.role === 'Inspector') {
-      return (
-        <div className="animate-fadeIn">
-          <InspectorPortal
-            slots={slots}
-            qaLogs={qaLogs}
-            contractors={contractors}
-            punchListDefects={punchListDefects}
-            civilWorksMilestones={civilWorksMilestones}
-            manpowerAudits={manpowerAudits}
-            onAddQALog={handleAddQALog}
-            onCreateDefect={handleCreateDefect}
-            onUpdateDefect={handleUpdateDefect}
-            onUpdateCivilMilestone={handleUpdateCivilMilestone}
-            onCreateManpowerAudit={handleCreateManpowerAudit}
-            onLogout={handleInitiateLogout}
-          />
-        </div>
+    return (
+      <AdminPortal
+          parcels={parcels}
+          slots={slots}
+          clients={clients}
+          contractors={contractors}
+          qaLogs={qaLogs}
+          punchListDefects={punchListDefects}
+          civilWorksMilestones={civilWorksMilestones}
+          auditLogs={auditLogs}
+          payroll={payroll}
+          budget={budget}
+          manpowerAudits={manpowerAudits}
+          laborAllocations={laborAllocations}
+          aiRecommendations={aiRecommendations}
+          tasks={tasks}
+          siteLogs={siteLogs}
+          documents={documents}
+          risks={risks}
+          changeOrders={changeOrders}
+          permits={permits}
+          scheduleEvents={scheduleEvents}
+          projects={projects}
+          extendedPayroll={extendedPayroll}
+          session={session}
+          onAddParcel={handleAddParcel}
+          onSubdivideParcel={handleSubdivideParcel}
+          onRegisterClient={handleRegisterClient}
+          onDeleteClient={handleDeleteClient}
+          onAssignClient={handleAssignClient}
+          onTransitionSlotStatus={handleTransitionSlotStatus}
+          onUpdateTitlePipeline={handleUpdateTitlePipeline}
+          onVerifyKyc={handleVerifyKyc}
+          onCreateDefect={handleCreateDefect}
+          onUpdateDefect={handleUpdateDefect}
+          onUpdateCivilMilestone={handleUpdateCivilMilestone}
+          onRegisterContractor={handleRegisterContractor}
+          onDeleteContractor={handleDeleteContractor}
+          onUpdateContractors={handleUpdateContractors}
+          onAddQALog={handleAddQALog}
+          onAddPayroll={handleAddPayroll}
+          onCreateManpowerAudit={handleCreateManpowerAudit}
+          onSaveAllocation={handleSaveAllocation}
+          onApplyAIRecommendation={handleApplyAIRecommendation}
+          onAddTask={handleAddTask}
+          onUpdateTaskStatus={handleUpdateTaskStatus}
+          onAddSiteLog={handleAddSiteLog}
+          onAddDocument={handleAddDocument}
+          onUpdateDocument={handleUpdateDocument}
+          onDeleteDocument={handleDeleteDocument}
+          onSyncSchedule={handleSyncSchedule}
+          onAddRisk={handleAddRisk}
+          onImportCADLots={handleImportCADLots}
+          onClearAllLots={handleClearAllLots}
+          onDeleteParcel={handleDeleteParcel}
+          onApplyAIPricing={handleApplyAIPricing}
+          onAddPermit={handleAddPermit}
+          onUpdatePermitStatus={handleUpdatePermitStatus}
+          onUpdatePermit={handleUpdatePermit}
+          onDeletePermit={handleDeletePermit}
+          onAddScheduleEvent={handleAddScheduleEvent}
+          onUpdateScheduleEvent={handleUpdateScheduleEvent}
+          onDeleteScheduleEvent={handleDeleteScheduleEvent}
+          onCreateProject={handleCreateProject}
+          onUpdateProject={handleUpdateProject}
+          onDeleteProject={handleDeleteProject}
+          onAddExtendedPayroll={handleAddExtendedPayroll}
+          onUpdateExtendedPayroll={handleUpdateExtendedPayroll}
+          onDeleteExtendedPayroll={handleDeleteExtendedPayroll}
+          onRecordPayment={handleRecordPayment}
+          onDisbursePayroll={handleDisbursePayroll}
+          onLogout={handleInitiateLogout}
+          onUpdateSession={handleUpdateSession}
+        />
       );
-    }
-
-    // Client Portal
-    if (session.role === 'Client') {
-      const activeClientInDb = clients.find(c => c.id === session.clientId || c.email === session.email) || clients[1] || clients[0];
-      return (
-        <div className="animate-fadeIn">
-          <ClientPortal
-            client={activeClientInDb}
-            slots={slots}
-            qaLogs={qaLogs}
-            civilWorksMilestones={civilWorksMilestones}
-            punchListDefects={punchListDefects.filter(d => d.slotId === activeClientInDb?.slotId)}
-            onSignAcceptance={handleSignAcceptance}
-            onLogout={handleInitiateLogout}
-          />
-        </div>
-      );
-    }
 
     return <LandingPage onEnterPortal={() => setSession('login')} />;
   };

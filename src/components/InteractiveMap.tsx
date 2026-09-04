@@ -205,6 +205,84 @@ export default function InteractiveMap({
     }, 400);
   };
 
+  // Dynamic Map Bounding Box: Calculates exact envelope for ANY number of lots (1 to 500+)
+  const mapBoundingBox = useMemo(() => {
+    if (!slots || slots.length === 0) {
+      return { minX: 0, minY: 0, maxX: 1000, maxY: 650, width: 1000, height: 650, viewBox: "0 0 1000 650", roadY: 270, roadWidth: 940, roadX: 30 };
+    }
+
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+
+    const totalCols = Math.min(slots.length, Math.max(5, Math.ceil(Math.sqrt(slots.length * 1.5))));
+
+    slots.forEach((slot, idx) => {
+      let pts: SlotPoint[] = [];
+      if (slot.polygonPoints) {
+        if (typeof slot.polygonPoints === 'string') {
+          try {
+            const parsed = JSON.parse(slot.polygonPoints);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              pts = parsed;
+            }
+          } catch {}
+        } else if (Array.isArray(slot.polygonPoints)) {
+          pts = slot.polygonPoints;
+        }
+      }
+
+      if (pts.length === 0) {
+        const row = slot.row || Math.ceil((idx + 1) / totalCols);
+        const col = slot.col || ((idx % totalCols) + 1);
+        const x0 = 60 + (col - 1) * 170;
+        const y0 = 50 + (row - 1) * 130;
+        const x1 = x0 + 150;
+        const y1 = y0 + 110;
+        pts = [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }];
+      }
+
+      pts.forEach(p => {
+        if (typeof p.x === 'number' && typeof p.y === 'number' && !isNaN(p.x) && !isNaN(p.y)) {
+          if (p.x < minX) minX = p.x;
+          if (p.x > maxX) maxX = p.x;
+          if (p.y < minY) minY = p.y;
+          if (p.y > maxY) maxY = p.y;
+        }
+      });
+    });
+
+    if (minX === Infinity || maxX === -Infinity || minY === Infinity || maxY === -Infinity) {
+      return { minX: 0, minY: 0, maxX: 1000, maxY: 650, width: 1000, height: 650, viewBox: "0 0 1000 650", roadY: 270, roadWidth: 940, roadX: 30 };
+    }
+
+    const paddingX = Math.max(60, (maxX - minX) * 0.06);
+    const paddingY = Math.max(60, (maxY - minY) * 0.06);
+
+    const bMinX = Math.round(minX - paddingX);
+    const bMinY = Math.round(minY - paddingY);
+    const bWidth = Math.max(900, Math.round((maxX - minX) + paddingX * 2));
+    const bHeight = Math.max(600, Math.round((maxY - minY) + paddingY * 2));
+
+    const roadY = Math.round(minY + (maxY - minY) * 0.45);
+    const roadX = bMinX + 20;
+    const roadWidth = bWidth - 40;
+
+    return {
+      minX: bMinX,
+      minY: bMinY,
+      maxX: bMinX + bWidth,
+      maxY: bMinY + bHeight,
+      width: bWidth,
+      height: bHeight,
+      viewBox: `${bMinX} ${bMinY} ${bWidth} ${bHeight}`,
+      roadY,
+      roadWidth,
+      roadX
+    };
+  }, [slots]);
+
   // Generate Custom Subdivision Grid
   const handleGenerateCustomSubdivision = (e: React.FormEvent) => {
     e.preventDefault();
@@ -212,7 +290,7 @@ export default function InteractiveMap({
     const count = Number(subdivideLotCount) || 12;
     const area = Number(subdivideLotArea) || 500;
     const price = Number(subdivideBasePrice) || 48000;
-    const cols = Math.min(count, 4);
+    const cols = Math.min(count, count > 24 ? 6 : count > 12 ? 5 : 4);
     const rows = Math.ceil(count / cols);
 
     let num = 1;
@@ -255,18 +333,19 @@ export default function InteractiveMap({
       if (typeof slot.polygonPoints === 'string') {
         try {
           const parsed = JSON.parse(slot.polygonPoints);
-          if (Array.isArray(parsed)) {
+          if (Array.isArray(parsed) && parsed.length > 0) {
             return parsed.map((p: SlotPoint) => `${p.x},${p.y}`).join(' ');
           }
         } catch {}
-      } else if (Array.isArray(slot.polygonPoints)) {
+      } else if (Array.isArray(slot.polygonPoints) && slot.polygonPoints.length > 0) {
         return slot.polygonPoints.map((p) => `${p.x},${p.y}`).join(' ');
       }
     }
 
     // Default geometric grid rendering based on row / col if polygon vertices not supplied
-    const row = slot.row || Math.ceil((index + 1) / 5);
-    const col = slot.col || ((index % 5) + 1);
+    const totalCols = Math.min(slots.length, Math.max(5, Math.ceil(Math.sqrt(slots.length * 1.5))));
+    const row = slot.row || Math.ceil((index + 1) / totalCols);
+    const col = slot.col || ((index % totalCols) + 1);
     const x0 = 60 + (col - 1) * 170;
     const y0 = 50 + (row - 1) * 130;
     const x1 = x0 + 150;
@@ -309,7 +388,7 @@ export default function InteractiveMap({
           <div className="flex items-center gap-2">
             <h2 className="text-lg font-bold text-white flex items-center gap-2">
               <Compass className="w-5 h-5 text-emerald-400" />
-              AutoCAD Masterplan Studio & Vector Map
+              Project Map & Space Planning Studio
             </h2>
             <span className="bg-emerald-950 text-emerald-300 border border-emerald-800 text-xs px-2.5 py-0.5 rounded-full font-mono font-bold">
               {slots.length} Active Lots
@@ -460,7 +539,7 @@ export default function InteractiveMap({
           {/* Interactive Vector SVG Canvas */}
           {slots.length > 0 ? (
             <div 
-              className="w-full h-[520px] cursor-grab active:cursor-grabbing flex items-center justify-center select-none overflow-hidden"
+              className="w-full h-[540px] cursor-grab active:cursor-grabbing flex items-center justify-center select-none overflow-hidden"
               onMouseDown={(e) => {
                 setIsDragging(true);
                 setDragStart({ x: e.clientX - panOffset.x, y: e.clientY - panOffset.y });
@@ -472,9 +551,14 @@ export default function InteractiveMap({
               }}
               onMouseUp={() => setIsDragging(false)}
               onMouseLeave={() => setIsDragging(false)}
+              onWheel={(e) => {
+                e.preventDefault();
+                const delta = e.deltaY < 0 ? 0.1 : -0.1;
+                setZoomLevel((z) => Math.min(Math.max(z + delta, 0.3), 3.5));
+              }}
             >
               <svg
-                viewBox="0 0 1000 650"
+                viewBox={mapBoundingBox.viewBox}
                 className="w-full h-full transition-transform duration-75"
                 style={{
                   transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoomLevel})`,
@@ -490,14 +574,37 @@ export default function InteractiveMap({
                   </defs>
                 )}
                 {isLayerVisible.grid && (
-                  <rect width="1000" height="650" fill="url(#cadGrid)" />
+                  <rect 
+                    x={mapBoundingBox.minX} 
+                    y={mapBoundingBox.minY} 
+                    width={mapBoundingBox.width} 
+                    height={mapBoundingBox.height} 
+                    fill="url(#cadGrid)" 
+                  />
                 )}
 
                 {/* Road Network & Spine */}
                 {isLayerVisible.roads && (
                   <g className="roads-layer">
-                    <rect x="30" y="270" width="940" height="45" fill="rgba(30, 41, 59, 0.6)" stroke="#475569" strokeDasharray="6 4" rx="6" />
-                    <text x="500" y="298" fill="#94a3b8" fontSize="12" fontFamily="monospace" fontWeight="bold" textAnchor="middle">
+                    <rect 
+                      x={mapBoundingBox.roadX} 
+                      y={mapBoundingBox.roadY} 
+                      width={mapBoundingBox.roadWidth} 
+                      height="45" 
+                      fill="rgba(30, 41, 59, 0.6)" 
+                      stroke="#475569" 
+                      strokeDasharray="6 4" 
+                      rx="6" 
+                    />
+                    <text 
+                      x={mapBoundingBox.minX + mapBoundingBox.width / 2} 
+                      y={mapBoundingBox.roadY + 28} 
+                      fill="#94a3b8" 
+                      fontSize="12" 
+                      fontFamily="monospace" 
+                      fontWeight="bold" 
+                      textAnchor="middle"
+                    >
                       === 6.5M CONCRETE SPINE ROAD NETWORK (PHASE 1 CAVINTI) ===
                     </text>
                   </g>

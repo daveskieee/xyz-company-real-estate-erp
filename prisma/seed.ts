@@ -44,29 +44,17 @@ async function main() {
   await prisma.changeOrder.deleteMany({});
   await prisma.user.deleteMany({});
 
-  console.log('Seeding core authenticator accounts (Admin & Inspector)...');
-  
-  // Admin User (COO)
+  console.log('Seeding admin account...');
+
+  // Primary Admin Account
   await prisma.user.create({
     data: {
-      email: 'angelfiremaui_03@yahoo.com',
-      name: 'Mauro R. Principe Jr. (Chief Operating Officer)',
+      email: 'davematthewreglos@gmail.com',
+      name: 'Dave Matthew Reglos',
       role: Role.ADMIN,
       accountStatus: AccountStatus.ACTIVE,
       passwordHash: hashPassword('admin123'),
-      contact: '+63 900 000 0000',
-    },
-  });
-
-  // Inspector User (Field Site Monitor)
-  await prisma.user.create({
-    data: {
-      email: 'ricardo@jramrealty.com',
-      name: 'Engr. Ricardo Gomez (Site Lead)',
-      role: Role.INSPECTOR,
-      accountStatus: AccountStatus.ACTIVE,
-      passwordHash: hashPassword('inspector123'),
-      contact: '+63 900 111 2222',
+      contact: '',
     },
   });
 
@@ -76,9 +64,9 @@ async function main() {
       entityType: 'PARCEL',
       entityId: 'SYSTEM',
       action: 'CLEAN_SLATE_INITIALIZED',
-      actorName: 'Mauro R. Principe Jr.',
+      actorName: 'Dave Matthew Reglos',
       actorRole: 'ADMIN',
-      details: 'System database initialized with zero sample data. Ready for fresh step-by-step project lifecycle testing.',
+      details: 'System database initialized with zero sample data. Ready for fresh data entry.',
     }
   });
 

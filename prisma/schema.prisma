@@ -108,15 +108,21 @@ model Slot {
 model Contractor {
   id                String   @id @default(uuid())
   name              String
-  contact           String
-  activeProjectSite String
-  company           String?
-  specialty         String?  // e.g., "Land Leveling", "Road Construction"
+  contact           String?
+  activeProjectSite String?  @default("NexBridge Software Hub")
+  company           String?  @default("CTVill Builders Corporation")
+  specialty         String?  // e.g., "Land Leveling", "Road Construction", or Trade
+  employmentType    String   @default("INTERNAL") // "INTERNAL" (CTVill Staff/Crew) or "OUTSOURCED" (Partner Firm)
+  department        String?  // e.g. "Project Management & Construction", "Design & Pre-Construction", etc.
+  roleTitle         String?  // e.g. "Site Foremen", "Lead Architect", etc.
+  dailyRate         Decimal? @db.Decimal(10, 2)
+  monthlySalary     Decimal? @db.Decimal(12, 2)
+  status            String   @default("ACTIVE") // "ACTIVE", "ON_LEAVE", "INACTIVE"
   contractAmount    Decimal? @db.Decimal(12, 2)
   paidAmount        Decimal? @db.Decimal(12, 2)
-  activeManpower    Int      @default(0)
+  activeManpower    Int      @default(1)
   milestoneProgress Float    @default(0.0) // percentage
-  rating            Float?   // scale of 1-5
+  rating            Float?   @default(5.0) // scale of 1-5
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
@@ -443,4 +449,12 @@ model ChangeOrder {
   updatedAt       DateTime @updatedAt
 
   @@map("change_orders")
+}
+
+model SystemSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("system_settings")
 }

@@ -24,12 +24,198 @@ const connectionString = process.env.DATABASE_URL || 'postgresql://postgres:post
 const isCloudDb = connectionString.includes('sslmode=') || connectionString.includes('neon.tech') || connectionString.includes('supabase') || connectionString.includes('render');
 const pool = new Pool({
   connectionString,
+  max: 25,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 10000,
   ...(isCloudDb ? { ssl: { rejectUnauthorized: false } } : {})
 });
 const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 
-app.use(express.json());
+// Enable full CORS for frontend development servers
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
+// Support up to 50MB payloads for base64 encoded photo uploads and document assets
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
+// Ensure system_settings table exists in PostgreSQL for account and persistent system state
+pool.query(`
+  CREATE TABLE IF NOT EXISTS system_settings (
+    key TEXT PRIMARY KEY,
+    value JSONB NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+  );
+`).catch((err: any) => console.error('Error initializing system_settings table:', err));
+
+// Ensure fitout_quotations table exists in PostgreSQL for quotation tracking
+pool.query(`
+  CREATE TABLE IF NOT EXISTS fitout_quotations (
+    id TEXT PRIMARY KEY,
+    client_name TEXT NOT NULL,
+    client_email TEXT NOT NULL,
+    client_phone TEXT,
+    project_scope TEXT NOT NULL,
+    estimated_cost NUMERIC DEFAULT 0,
+    estimated_weeks NUMERIC DEFAULT 0,
+    estimator_area NUMERIC DEFAULT 0,
+    space_type TEXT,
+    finish_tier TEXT,
+    project_notes TEXT,
+    status TEXT DEFAULT 'PENDING',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+  );
+`).catch((err: any) => console.error('Error initializing fitout_quotations table:', err));
+
+// Ensure government_permits table exists in PostgreSQL
+pool.query(`
+  CREATE TABLE IF NOT EXISTS government_permits (
+    id TEXT PRIMARY KEY,
+    project_id TEXT,
+    project_name TEXT NOT NULL,
+    permit_name TEXT NOT NULL,
+    permit_type TEXT NOT NULL,
+    issuing_agency TEXT NOT NULL,
+    reference_no TEXT,
+    status TEXT DEFAULT 'PENDING',
+    application_date DATE,
+    approval_date DATE,
+    expiry_date DATE,
+    notes TEXT,
+    document_url TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+  );
+`).catch((err: any) => console.error('Error initializing government_permits table:', err));
+
+// Ensure schedule_events table exists in PostgreSQL
+pool.query(`
+  CREATE TABLE IF NOT EXISTS schedule_events (
+    id TEXT PRIMARY KEY,
+    project_id TEXT,
+    project_name TEXT,
+    title TEXT NOT NULL,
+    event_type TEXT DEFAULT 'MEETING',
+    event_date DATE NOT NULL,
+    start_time TEXT,
+    end_time TEXT,
+    location TEXT,
+    attendees TEXT,
+    notes TEXT,
+    status TEXT DEFAULT 'SCHEDULED',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+  );
+`).catch((err: any) => console.error('Error initializing schedule_events table:', err));
+
+// Ensure commercial_projects table exists in PostgreSQL
+pool.query(`
+  CREATE TABLE IF NOT EXISTS commercial_projects (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    client_name TEXT NOT NULL,
+    description TEXT,
+    location TEXT,
+    budget NUMERIC DEFAULT 0,
+    funds_collected NUMERIC DEFAULT 0,
+    progress_percentage NUMERIC DEFAULT 0,
+    status TEXT DEFAULT 'IN_PROGRESS',
+    target_handover_date DATE,
+    start_date DATE,
+    assigned_workers_count INTEGER DEFAULT 12,
+    tasks_count INTEGER DEFAULT 15,
+    milestones_count INTEGER DEFAULT 5,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+  );
+`).catch((err: any) => console.error('Error initializing commercial_projects table:', err));
+
+// Ensure extended_payroll table exists in PostgreSQL
+pool.query(`
+  CREATE TABLE IF NOT EXISTS extended_payroll (
+    id TEXT PRIMARY KEY,
+    worker_name TEXT NOT NULL,
+    contractor_company TEXT NOT NULL,
+    project_name TEXT NOT NULL,
+    role TEXT NOT NULL,
+    hours_worked NUMERIC DEFAULT 0,
+    days_worked NUMERIC DEFAULT 0,
+    daily_rate NUMERIC DEFAULT 0,
+    overtime_hours NUMERIC DEFAULT 0,
+    gross_pay NUMERIC DEFAULT 0,
+    deductions NUMERIC DEFAULT 0,
+    net_pay NUMERIC DEFAULT 0,
+    status TEXT DEFAULT 'Pending',
+    disbursement_date DATE,
+    payment_method TEXT DEFAULT 'Bank Transfer',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+  );
+`).catch((err: any) => console.error('Error initializing extended_payroll table:', err));
+
+// Ensure labor_allocations and ai_manpower_recommendations tables exist in PostgreSQL
+pool.query(`
+  CREATE TABLE IF NOT EXISTS labor_allocations (
+    id TEXT PRIMARY KEY,
+    contractor_id TEXT NOT NULL,
+    contractor_name TEXT NOT NULL,
+    sector_name TEXT NOT NULL,
+    target_lots TEXT NOT NULL,
+    assigned_headcount INTEGER DEFAULT 0,
+    work_scope TEXT NOT NULL,
+    status TEXT DEFAULT 'ACTIVE',
+    notes TEXT,
+    updated_at DATE DEFAULT CURRENT_DATE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS ai_manpower_recommendations (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    target_lots TEXT NOT NULL,
+    contractor_id TEXT NOT NULL,
+    contractor_name TEXT NOT NULL,
+    current_headcount INTEGER NOT NULL,
+    recommended_headcount INTEGER NOT NULL,
+    rationale TEXT NOT NULL,
+    priority TEXT DEFAULT 'MEDIUM',
+    applied BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+  );
+`).catch((err: any) => console.error('Error initializing labor_allocations / ai_manpower_recommendations tables:', err));
+
+
+export async function getSystemSetting(key: string): Promise<any> {
+  try {
+    const res = await pool.query('SELECT value FROM system_settings WHERE key = $1', [key]);
+    if (res.rows && res.rows.length > 0) {
+      return res.rows[0].value;
+    }
+    return null;
+  } catch (err) {
+    console.error(`Error reading system setting "${key}":`, err);
+    return null;
+  }
+}
+
+export async function setSystemSetting(key: string, value: any): Promise<boolean> {
+  try {
+    await pool.query(
+      `INSERT INTO system_settings (key, value, updated_at)
+       VALUES ($1, $2, CURRENT_TIMESTAMP)
+       ON CONFLICT (key) DO UPDATE
+       SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
+      [key, JSON.stringify(value)]
+    );
+    return true;
+  } catch (err) {
+    console.error(`Error writing system setting "${key}":`, err);
+    return false;
+  }
+}
 
 // Password security helpers using scrypt
 export function hashPassword(password: string): string {
@@ -163,13 +349,125 @@ async function mapUserToClient(user: any) {
   };
 }
 
-// 1. GET /api/all-data: Fetches all operational models for frontend initial render
+// In-Memory Performance Cache for /api/all-data with instant SSE invalidation
+let allDataCache: any = null;
+let allDataCacheTime = 0;
+const ALL_DATA_CACHE_TTL = 3000; // 3-second cache TTL
+
+export function invalidateAllDataCache() {
+  allDataCache = null;
+  allDataCacheTime = 0;
+}
+
+// 1. GET /api/all-data: Fetches all operational models concurrently
 app.get('/api/all-data', async (req, res) => {
   try {
-    // A. Parcels
-    const dbParcels = await prisma.landParcel.findMany({
-      include: { slots: true, civilWorksMilestones: { orderBy: { phaseName: 'asc' } } }
-    });
+    // Return cached payload immediately if still fresh (e.g. within 3s without mutations)
+    if (allDataCache && (Date.now() - allDataCacheTime < ALL_DATA_CACHE_TTL)) {
+      return res.json(allDataCache);
+    }
+
+    // Execute all independent database queries concurrently in parallel
+    const [
+      dbParcels,
+      dbSlots,
+      dbClients,
+      dbContractors,
+      dbQaLogs,
+      dbDefects,
+      dbCivilMilestones,
+      dbAuditLogs,
+      dbPayroll,
+      ledgerPaidSum,
+      clientPackagesCount,
+      dbManpowerAudits,
+      dbTasks,
+      dbSiteLogs,
+      dbDocs,
+      dbRisks,
+      dbCOs,
+      dbPermitsRes,
+      dbEventsRes,
+      dbProjectsRes,
+      dbExtPayrollRes,
+      dbAllocRes,
+      dbRecRes
+    ] = await Promise.all([
+      // A. Parcels
+      prisma.landParcel.findMany({
+        include: { slots: true, civilWorksMilestones: { orderBy: { phaseName: 'asc' } } }
+      }),
+      // B. Slots
+      prisma.slot.findMany({
+        include: { clientPackage: true },
+        orderBy: { slotNumber: 'asc' }
+      }),
+      // C. Clients
+      prisma.user.findMany({
+        where: { role: Role.CLIENT },
+        include: {
+          buyerKyc: true,
+          clientPackage: {
+            include: {
+              installmentLedgers: { orderBy: { dueDate: 'asc' } },
+              titlePermitTracker: true
+            }
+          }
+        }
+      }),
+      // D. Contractors & In-House Workforce
+      prisma.contractor.findMany({ orderBy: { name: 'asc' } }),
+      // E. QA Logs
+      prisma.weeklyProgressLog.findMany({
+        include: { inspector: true },
+        orderBy: { date: 'desc' }
+      }),
+      // F. Punch-List Defects
+      prisma.punchListDefect.findMany({
+        include: { inspector: true, contractor: true },
+        orderBy: { createdAt: 'desc' }
+      }),
+      // G. Civil Works Milestones
+      prisma.civilWorksMilestone.findMany({ orderBy: { phaseName: 'asc' } }),
+      // H. Process Audit Logs
+      prisma.processAuditLog.findMany({ orderBy: { createdAt: 'desc' }, take: 50 }),
+      // I. Payroll
+      prisma.payrollRecord.findMany({ orderBy: { date: 'desc' } }),
+      // Budget components
+      prisma.installmentLedger.aggregate({
+        _sum: { amountPaid: true },
+        where: { status: PaymentStatus.PAID }
+      }),
+      prisma.clientPackage.count(),
+      // J. Daily Manpower Audits
+      (prisma as any).dailyManpowerAudit
+        ? (prisma as any).dailyManpowerAudit.findMany({ orderBy: { date: 'desc' } }).catch(() => [])
+        : Promise.resolve([]),
+      // K. Tasks
+      prisma.projectTask.findMany({ orderBy: { createdAt: 'desc' } }).catch(() => []),
+      // Site Logs
+      prisma.dailySiteLog.findMany({ orderBy: { date: 'desc' } }).catch(() => []),
+      // Documents
+      prisma.projectDocument.findMany({ orderBy: { createdAt: 'desc' } }).catch(() => []),
+      // Risks
+      prisma.projectRisk.findMany({ orderBy: { riskScore: 'desc' } }).catch(() => []),
+      // Change Orders
+      prisma.changeOrder.findMany({ orderBy: { createdAt: 'desc' } }).catch(() => []),
+      // Permits
+      pool.query('SELECT * FROM government_permits ORDER BY expiry_date ASC NULLS LAST, created_at DESC').catch(() => ({ rows: [] })),
+      // Schedule Events
+      pool.query('SELECT * FROM schedule_events ORDER BY event_date ASC, start_time ASC').catch(() => ({ rows: [] })),
+      // Projects
+      pool.query('SELECT * FROM commercial_projects ORDER BY created_at ASC').catch(() => ({ rows: [] })),
+      // Extended Payroll
+      pool.query('SELECT * FROM extended_payroll ORDER BY created_at DESC').catch(() => ({ rows: [] })),
+      // Labor Allocations
+      pool.query('SELECT * FROM labor_allocations ORDER BY sector_name ASC').catch(() => ({ rows: [] })),
+      // AI Recommendations
+      pool.query('SELECT * FROM ai_manpower_recommendations ORDER BY created_at DESC').catch(() => ({ rows: [] }))
+    ]);
+
+    // Map Parcels
     const parcels = dbParcels.map(p => ({
       id: p.id,
       name: p.name,
@@ -180,11 +478,7 @@ app.get('/api/all-data', async (req, res) => {
       acquisitionDate: p.acquisitionDate.toISOString().split('T')[0],
     }));
 
-    // B. Slots with 7-stage lifecycle status
-    const dbSlots = await prisma.slot.findMany({
-      include: { clientPackage: true },
-      orderBy: { slotNumber: 'asc' }
-    });
+    // Map Slots
     const slots = dbSlots.map(s => ({
       id: s.id,
       parcelId: s.parcelId,
@@ -199,40 +493,29 @@ app.get('/api/all-data', async (req, res) => {
       assignedClientId: s.clientPackage?.userId || null,
     }));
 
-    // C. Clients
-    const dbClients = await prisma.user.findMany({
-      where: { role: Role.CLIENT },
-      include: {
-        buyerKyc: true,
-        clientPackage: {
-          include: {
-            installmentLedgers: { orderBy: { dueDate: 'asc' } },
-            titlePermitTracker: true
-          }
-        }
-      }
-    });
+    // Map Clients
     const clients = await Promise.all(dbClients.map(c => mapUserToClient(c)));
 
-    // D. Contractors
-    const dbContractors = await prisma.contractor.findMany();
+    // Map Contractors & Workforce
     const contractors = dbContractors.map(c => ({
       id: c.id,
       name: c.name,
       company: c.company || '',
-      specialty: c.specialty || 'Land Leveling',
+      specialty: c.specialty || 'General Contractor',
       contractAmount: Number(c.contractAmount || 0),
       paidAmount: Number(c.paidAmount || 0),
       activeManpower: c.activeManpower,
       milestoneProgress: c.milestoneProgress,
       rating: c.rating || 0,
+      employmentType: (c as any).employmentType || 'INTERNAL',
+      department: (c as any).department || null,
+      roleTitle: (c as any).roleTitle || null,
+      dailyRate: (c as any).dailyRate !== null && (c as any).dailyRate !== undefined ? Number((c as any).dailyRate) : null,
+      monthlySalary: (c as any).monthlySalary !== null && (c as any).monthlySalary !== undefined ? Number((c as any).monthlySalary) : null,
+      status: (c as any).status || 'ACTIVE',
     }));
 
-    // E. QA Logs
-    const dbQaLogs = await prisma.weeklyProgressLog.findMany({
-      include: { inspector: true },
-      orderBy: { date: 'desc' }
-    });
+    // Map QA Logs
     const qaLogs = dbQaLogs.map(l => ({
       id: l.id,
       date: l.date.toISOString().split('T')[0],
@@ -246,11 +529,7 @@ app.get('/api/all-data', async (req, res) => {
       siteActivity: l.siteActivity || 'Ready',
     }));
 
-    // F. Punch-List Defects
-    const dbDefects = await prisma.punchListDefect.findMany({
-      include: { inspector: true, contractor: true },
-      orderBy: { createdAt: 'desc' }
-    });
+    // Map Punch-List Defects
     const punchListDefects = dbDefects.map(d => ({
       id: d.id,
       slotId: d.slotId,
@@ -269,10 +548,7 @@ app.get('/api/all-data', async (req, res) => {
       updatedAt: d.updatedAt.toISOString(),
     }));
 
-    // G. Civil Works Milestones
-    const dbCivilMilestones = await prisma.civilWorksMilestone.findMany({
-      orderBy: { phaseName: 'asc' }
-    });
+    // Map Civil Works Milestones
     const civilWorksMilestones = dbCivilMilestones.map(m => ({
       id: m.id,
       parcelId: m.parcelId,
@@ -285,11 +561,7 @@ app.get('/api/all-data', async (req, res) => {
       remarks: m.remarks || '',
     }));
 
-    // H. Process Audit Logs
-    const dbAuditLogs = await prisma.processAuditLog.findMany({
-      orderBy: { createdAt: 'desc' },
-      take: 50
-    });
+    // Map Process Audit Logs
     const auditLogs = dbAuditLogs.map(a => ({
       id: a.id,
       entityType: a.entityType,
@@ -301,10 +573,7 @@ app.get('/api/all-data', async (req, res) => {
       createdAt: a.createdAt.toISOString(),
     }));
 
-    // I. Payroll & Budget Overview
-    const dbPayroll = await prisma.payrollRecord.findMany({
-      orderBy: { date: 'desc' }
-    });
+    // Map Payroll & Budget
     const payroll = dbPayroll.map(p => ({
       id: p.id,
       date: p.date.toISOString().split('T')[0],
@@ -320,11 +589,6 @@ app.get('/api/all-data', async (req, res) => {
     const initialCapital = 800000 + Math.max(totalParcelsCount - 1, 0) * 500000;
     const landAcquisitionCost = parcels.reduce((sum, p) => sum + p.acquisitionCost, 0);
     const subdevelopmentCostPaid = payroll.filter(p => p.status === 'Disbursed').reduce((sum, p) => sum + p.amount, 0);
-    const ledgerPaidSum = await prisma.installmentLedger.aggregate({
-      _sum: { amountPaid: true },
-      where: { status: PaymentStatus.PAID }
-    });
-    const clientPackagesCount = await prisma.clientPackage.count();
     const collectedInstallments = Number(ledgerPaidSum._sum.amountPaid || 0) + clientPackagesCount * 5000;
     const roadInfrastructureFee = 75000;
     const currentCashReserve = initialCapital + collectedInstallments - landAcquisitionCost - subdevelopmentCostPaid - roadInfrastructureFee;
@@ -339,140 +603,208 @@ app.get('/api/all-data', async (req, res) => {
       nextHectareCost: 500000,
     };
 
-    // J. Daily Manpower Audits (Field Spot-Check Roll-Calls)
-    let manpowerAudits: any[] = [];
-    try {
-      if ((prisma as any).dailyManpowerAudit) {
-        const dbManpowerAudits = await (prisma as any).dailyManpowerAudit.findMany({
-          orderBy: { date: 'desc' }
-        });
-        manpowerAudits = dbManpowerAudits.map((m: any) => ({
-          id: m.id,
-          date: m.date.toISOString().split('T')[0],
-          contractorId: m.contractorId,
-          contractorName: m.contractorName,
-          specialty: m.specialty,
-          shift: m.shift,
-          claimedHeadcount: m.claimedHeadcount,
-          verifiedHeadcount: m.verifiedHeadcount,
-          discrepancy: m.discrepancy,
-          assignedSectorOrLot: m.assignedSectorOrLot,
-          supervisorName: m.supervisorName,
-          gpsCoordinates: m.gpsCoordinates,
-          verificationStatus: m.verificationStatus,
-          photoEvidenceVerified: m.photoEvidenceVerified,
-          remarks: m.remarks,
-          productivityIndex: m.productivityIndex
-        }));
-      }
-    } catch (e) {
-      console.warn('Manpower audits table not yet initialized in DB, returning empty array');
-    }
+    // Map Daily Manpower Audits
+    const manpowerAudits = (dbManpowerAudits || []).map((m: any) => ({
+      id: m.id,
+      date: m.date.toISOString().split('T')[0],
+      contractorId: m.contractorId,
+      contractorName: m.contractorName,
+      specialty: m.specialty,
+      shift: m.shift,
+      claimedHeadcount: m.claimedHeadcount,
+      verifiedHeadcount: m.verifiedHeadcount,
+      discrepancy: m.discrepancy,
+      assignedSectorOrLot: m.assignedSectorOrLot,
+      supervisorName: m.supervisorName,
+      gpsCoordinates: m.gpsCoordinates,
+      verificationStatus: m.verificationStatus,
+      photoEvidenceVerified: m.photoEvidenceVerified,
+      remarks: m.remarks,
+      productivityIndex: m.productivityIndex
+    }));
 
-    // K. Project Management System (PMS) Models
-    let tasks: any[] = [];
-    try {
-      const dbTasks = await prisma.projectTask.findMany({ orderBy: { createdAt: 'desc' } });
-      tasks = dbTasks.map(t => ({
-        id: t.id,
-        title: t.title,
-        description: t.description || '',
-        assigneeName: t.assigneeName || '',
-        assigneeRole: t.assigneeRole || '',
-        priority: t.priority,
-        status: t.status,
-        dueDate: t.dueDate ? t.dueDate.toISOString().split('T')[0] : '',
-        startDate: t.startDate ? t.startDate.toISOString().split('T')[0] : '',
-        estimatedHours: t.estimatedHours || 0,
-        actualHours: t.actualHours || 0,
-        category: t.category || '',
-        milestonePhase: t.milestonePhase || '',
-        subtasks: t.subtasksJson ? JSON.parse(t.subtasksJson) : [],
-        tags: t.tags ? t.tags.split(',') : [],
-        createdAt: t.createdAt.toISOString(),
-      }));
-    } catch (e) {
-      console.warn('Project tasks error:', e);
-    }
+    // Map Project Tasks
+    const tasks = (dbTasks || []).map((t: any) => ({
+      id: t.id,
+      title: t.title,
+      description: t.description || '',
+      assigneeName: t.assigneeName || '',
+      assigneeRole: t.assigneeRole || '',
+      priority: t.priority,
+      status: t.status,
+      dueDate: t.dueDate ? t.dueDate.toISOString().split('T')[0] : '',
+      startDate: t.startDate ? t.startDate.toISOString().split('T')[0] : '',
+      estimatedHours: t.estimatedHours || 0,
+      actualHours: t.actualHours || 0,
+      category: t.category || '',
+      milestonePhase: t.milestonePhase || '',
+      subtasks: t.subtasksJson ? JSON.parse(t.subtasksJson) : [],
+      tags: t.tags ? t.tags.split(',') : [],
+      createdAt: t.createdAt.toISOString(),
+    }));
 
-    let siteLogs: any[] = [];
-    try {
-      const dbSiteLogs = await prisma.dailySiteLog.findMany({ orderBy: { date: 'desc' } });
-      siteLogs = dbSiteLogs.map(s => ({
-        id: s.id,
-        date: s.date.toISOString(),
-        weather: s.weather,
-        temperature: s.temperature || '',
-        activeHeadcount: s.activeHeadcount,
-        equipmentOnSite: s.equipmentOnSite || '',
-        toolboxTopic: s.toolboxTopic || '',
-        workCompleted: s.workCompleted,
-        delaysOrIssues: s.delaysOrIssues || '',
-        supervisorName: s.supervisorName,
-        createdAt: s.createdAt.toISOString(),
-      }));
-    } catch (e) {
-      console.warn('Site logs error:', e);
-    }
+    // Map Site Logs
+    const siteLogs = (dbSiteLogs || []).map((s: any) => ({
+      id: s.id,
+      date: s.date.toISOString(),
+      weather: s.weather,
+      temperature: s.temperature || '',
+      activeHeadcount: s.activeHeadcount,
+      equipmentOnSite: s.equipmentOnSite || '',
+      toolboxTopic: s.toolboxTopic || '',
+      workCompleted: s.workCompleted,
+      delaysOrIssues: s.delaysOrIssues || '',
+      supervisorName: s.supervisorName,
+      createdAt: s.createdAt.toISOString(),
+    }));
 
-    let documents: any[] = [];
-    try {
-      const dbDocs = await prisma.projectDocument.findMany({ orderBy: { createdAt: 'desc' } });
-      documents = dbDocs.map(d => ({
-        id: d.id,
-        title: d.title,
-        category: d.category,
-        fileUrl: d.fileUrl || '',
-        fileSize: d.fileSize || '',
-        version: d.version,
-        status: d.status,
-        uploadedBy: d.uploadedBy,
-        notes: d.notes || '',
-        createdAt: d.createdAt.toISOString(),
-      }));
-    } catch (e) {
-      console.warn('Documents error:', e);
-    }
+    // Map Documents
+    const documents = (dbDocs || []).map((d: any) => ({
+      id: d.id,
+      title: d.title,
+      category: d.category,
+      fileUrl: d.fileUrl || '',
+      fileSize: d.fileSize || '',
+      version: d.version,
+      status: d.status,
+      uploadedBy: d.uploadedBy,
+      notes: d.notes || '',
+      createdAt: d.createdAt.toISOString(),
+    }));
 
-    let risks: any[] = [];
-    try {
-      const dbRisks = await prisma.projectRisk.findMany({ orderBy: { riskScore: 'desc' } });
-      risks = dbRisks.map(r => ({
-        id: r.id,
-        title: r.title,
-        category: r.category,
-        likelihood: r.likelihood,
-        impact: r.impact,
-        riskScore: r.riskScore,
-        mitigationPlan: r.mitigationPlan,
-        status: r.status,
-        ownerName: r.ownerName,
-        createdAt: r.createdAt.toISOString(),
-      }));
-    } catch (e) {
-      console.warn('Risks error:', e);
-    }
+    // Map Risks
+    const risks = (dbRisks || []).map((r: any) => ({
+      id: r.id,
+      title: r.title,
+      category: r.category,
+      likelihood: r.likelihood,
+      impact: r.impact,
+      riskScore: r.riskScore,
+      mitigationPlan: r.mitigationPlan,
+      status: r.status,
+      ownerName: r.ownerName,
+      createdAt: r.createdAt.toISOString(),
+    }));
 
-    let changeOrders: any[] = [];
-    try {
-      const dbCOs = await prisma.changeOrder.findMany({ orderBy: { createdAt: 'desc' } });
-      changeOrders = dbCOs.map(c => ({
-        id: c.id,
-        orderNumber: c.orderNumber,
-        title: c.title,
-        contractorName: c.contractorName,
-        requestedAmount: Number(c.requestedAmount),
-        approvedAmount: c.approvedAmount ? Number(c.approvedAmount) : null,
-        status: c.status,
-        justification: c.justification,
-        approvedBy: c.approvedBy || '',
-        createdAt: c.createdAt.toISOString(),
-      }));
-    } catch (e) {
-      console.warn('Change orders error:', e);
-    }
+    // Map Change Orders
+    const changeOrders = (dbCOs || []).map((c: any) => ({
+      id: c.id,
+      orderNumber: c.orderNumber,
+      title: c.title,
+      contractorName: c.contractorName,
+      requestedAmount: Number(c.requestedAmount),
+      approvedAmount: c.approvedAmount ? Number(c.approvedAmount) : null,
+      status: c.status,
+      justification: c.justification,
+      approvedBy: c.approvedBy || '',
+      createdAt: c.createdAt.toISOString(),
+    }));
 
-    res.json({
+    // Map Permits
+    const permits = (dbPermitsRes.rows || []).map((p: any) => ({
+      id: p.id,
+      projectId: p.project_id,
+      projectName: p.project_name,
+      permitName: p.permit_name,
+      permitType: p.permit_type,
+      issuingAgency: p.issuing_agency,
+      referenceNo: p.reference_no,
+      status: p.status,
+      applicationDate: p.application_date ? p.application_date.toISOString().split('T')[0] : null,
+      approvalDate: p.approval_date ? p.approval_date.toISOString().split('T')[0] : null,
+      expiryDate: p.expiry_date ? p.expiry_date.toISOString().split('T')[0] : null,
+      notes: p.notes || '',
+      documentUrl: p.document_url || '',
+      createdAt: p.created_at ? p.created_at.toISOString() : new Date().toISOString(),
+    }));
+
+    // Map Schedule Events
+    const scheduleEvents = (dbEventsRes.rows || []).map((e: any) => ({
+      id: e.id,
+      projectId: e.project_id,
+      projectName: e.project_name,
+      title: e.title,
+      eventType: e.event_type,
+      eventDate: e.event_date ? e.event_date.toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
+      startTime: e.start_time || '09:00',
+      endTime: e.end_time || '10:00',
+      location: e.location || 'Site Office',
+      attendees: e.attendees || '',
+      notes: e.notes || '',
+      status: e.status || 'SCHEDULED',
+      createdAt: e.created_at ? e.created_at.toISOString() : new Date().toISOString(),
+    }));
+
+    // Map Commercial Projects
+    const projects = (dbProjectsRes.rows || []).map((p: any) => ({
+      id: p.id,
+      name: p.name,
+      clientName: p.client_name,
+      description: p.description || '',
+      location: p.location || '',
+      budget: Number(p.budget || 0),
+      fundsCollected: Number(p.funds_collected || 0),
+      progressPercentage: Number(p.progress_percentage || 0),
+      status: p.status || 'IN_PROGRESS',
+      targetHandoverDate: p.target_handover_date ? p.target_handover_date.toISOString().split('T')[0] : '2026-12-31',
+      startDate: p.start_date ? p.start_date.toISOString().split('T')[0] : '2026-01-01',
+      assignedWorkersCount: Number(p.assigned_workers_count || 10),
+      tasksCount: Number(p.tasks_count || 15),
+      milestonesCount: Number(p.milestones_count || 5),
+      createdAt: p.created_at ? p.created_at.toISOString() : new Date().toISOString()
+    }));
+
+    // Map Extended Payroll
+    const extendedPayroll = (dbExtPayrollRes.rows || []).map((p: any) => ({
+      id: p.id,
+      workerName: p.worker_name,
+      contractorCompany: p.contractor_company,
+      projectName: p.project_name,
+      role: p.role,
+      hoursWorked: Number(p.hours_worked || 0),
+      daysWorked: Number(p.days_worked || 0),
+      dailyRate: Number(p.daily_rate || 0),
+      overtimeHours: Number(p.overtime_hours || 0),
+      grossPay: Number(p.gross_pay || 0),
+      deductions: Number(p.deductions || 0),
+      netPay: Number(p.net_pay || 0),
+      status: p.status || 'Pending',
+      disbursementDate: p.disbursement_date ? p.disbursement_date.toISOString().split('T')[0] : null,
+      paymentMethod: p.payment_method || 'Bank Transfer'
+    }));
+
+    // Map Labor Allocations
+    const laborAllocations = (dbAllocRes.rows || []).map((r: any) => ({
+      id: r.id,
+      contractorId: r.contractor_id,
+      contractorName: r.contractor_name,
+      sectorName: r.sector_name,
+      targetLots: r.target_lots,
+      assignedHeadcount: Number(r.assigned_headcount || 0),
+      workScope: r.work_scope,
+      status: r.status,
+      notes: r.notes || '',
+      updatedAt: r.updated_at ? r.updated_at.toISOString().split('T')[0] : new Date().toISOString().split('T')[0]
+    }));
+
+    // Map AI Recommendations
+    const aiRecommendations = (dbRecRes.rows || []).map((r: any) => ({
+      id: r.id,
+      title: r.title,
+      targetLots: r.target_lots,
+      targetSector: r.target_lots,
+      contractorId: r.contractor_id,
+      contractorName: r.contractor_name,
+      currentHeadcount: Number(r.current_headcount || 0),
+      recommendedHeadcount: Number(r.recommended_headcount || 0),
+      rationale: r.rationale,
+      suggestedScope: r.rationale,
+      priority: r.priority || 'MEDIUM',
+      impact: 'High Efficiency Gain',
+      applied: Boolean(r.applied)
+    }));
+
+    const responsePayload = {
       parcels,
       slots,
       clients,
@@ -484,12 +816,24 @@ app.get('/api/all-data', async (req, res) => {
       payroll,
       budget,
       manpowerAudits,
+      laborAllocations,
+      aiRecommendations,
       tasks,
       siteLogs,
       documents,
       risks,
-      changeOrders
-    });
+      changeOrders,
+      permits,
+      scheduleEvents,
+      projects,
+      extendedPayroll
+    };
+
+    // Store in live cache
+    allDataCache = responsePayload;
+    allDataCacheTime = Date.now();
+
+    res.json(responsePayload);
   } catch (error) {
     console.error('Error fetching all data:', error);
     res.status(500).json({ error: 'Internal Server Error' });
@@ -507,6 +851,7 @@ const sseClients = new Set<import('express').Response>();
 
 // Broadcast a data-change event to every connected browser tab
 export function broadcastChange(entity: string, payload?: Record<string, unknown>) {
+  invalidateAllDataCache();
   const message = `data: ${JSON.stringify({ type: 'data_changed', entity, ...payload })}\n\n`;
   sseClients.forEach(client => {
     try { client.write(message); } catch { /* client disconnected */ }
@@ -723,25 +1068,278 @@ app.get('/api/tasks-list', async (req, res) => {
   }
 });
 
-// GET /api/contractors-list — Contractor roster only
+// GET /api/contractors-list — Contractor & In-House Workforce roster
 app.get('/api/contractors-list', async (req, res) => {
   try {
-    const dbContractors = await prisma.contractor.findMany();
+    const dbContractors = await prisma.contractor.findMany({
+      orderBy: { name: 'asc' }
+    });
     const contractors = dbContractors.map(c => ({
       id: c.id,
       name: c.name,
       company: c.company || '',
-      specialty: c.specialty || 'Land Leveling',
+      specialty: c.specialty || 'General Contractor',
       contractAmount: Number(c.contractAmount || 0),
       paidAmount: Number(c.paidAmount || 0),
       activeManpower: c.activeManpower,
       milestoneProgress: c.milestoneProgress,
       rating: c.rating || 0,
+      employmentType: (c as any).employmentType || 'INTERNAL',
+      department: (c as any).department || null,
+      roleTitle: (c as any).roleTitle || null,
+      dailyRate: (c as any).dailyRate !== null && (c as any).dailyRate !== undefined ? Number((c as any).dailyRate) : null,
+      monthlySalary: (c as any).monthlySalary !== null && (c as any).monthlySalary !== undefined ? Number((c as any).monthlySalary) : null,
+      status: (c as any).status || 'ACTIVE',
     }));
     res.json(contractors);
   } catch (error) {
     console.error('Error fetching contractors:', error);
     res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// POST /api/contractors — Register CTVill In-House Staff or Outsourced Contractor
+app.post('/api/contractors', async (req, res) => {
+  try {
+    const {
+      id,
+      name,
+      company,
+      specialty,
+      activeManpower,
+      milestoneProgress,
+      contractAmount,
+      paidAmount,
+      rating,
+      employmentType,
+      department,
+      roleTitle,
+      dailyRate,
+      monthlySalary,
+      status,
+    } = req.body;
+
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Name is required' });
+    }
+
+    const contractorId = id || `CONT-${Date.now()}`;
+    const newContractor = await prisma.contractor.create({
+      data: {
+        id: contractorId,
+        name: name.trim(),
+        company: company && company.trim() ? company.trim() : (employmentType === 'OUTSOURCED' ? name.trim() : 'CTVill Builders Corporation'),
+        specialty: specialty || roleTitle || 'General Contractor',
+        activeManpower: activeManpower !== undefined && activeManpower !== null ? Number(activeManpower) : 1,
+        milestoneProgress: milestoneProgress !== undefined && milestoneProgress !== null ? Number(milestoneProgress) : 0,
+        contractAmount: contractAmount !== undefined && contractAmount !== null ? Number(contractAmount) : 0,
+        paidAmount: paidAmount !== undefined && paidAmount !== null ? Number(paidAmount) : 0,
+        rating: rating !== undefined && rating !== null ? Number(rating) : 5.0,
+        employmentType: employmentType || 'INTERNAL',
+        department: department || null,
+        roleTitle: roleTitle || null,
+        dailyRate: dailyRate !== undefined && dailyRate !== null && dailyRate !== '' ? Number(dailyRate) : null,
+        monthlySalary: monthlySalary !== undefined && monthlySalary !== null && monthlySalary !== '' ? Number(monthlySalary) : null,
+        status: status || 'ACTIVE',
+      },
+    });
+
+    broadcastChange('contractors');
+    res.status(201).json({
+      ...newContractor,
+      contractAmount: Number(newContractor.contractAmount || 0),
+      paidAmount: Number(newContractor.paidAmount || 0),
+      dailyRate: newContractor.dailyRate ? Number(newContractor.dailyRate) : null,
+      monthlySalary: newContractor.monthlySalary ? Number(newContractor.monthlySalary) : null,
+    });
+  } catch (error) {
+    console.error('Error creating contractor/worker:', error);
+    res.status(500).json({ error: 'Failed to register contractor/worker' });
+  }
+});
+
+// POST /api/contractors/update-progress — Update multiple contractors
+app.post('/api/contractors/update-progress', async (req, res) => {
+  try {
+    const { contractors } = req.body;
+    if (Array.isArray(contractors)) {
+      for (const c of contractors) {
+        if (c.id) {
+          await prisma.contractor.update({
+            where: { id: c.id },
+            data: {
+              activeManpower: c.activeManpower !== undefined ? Number(c.activeManpower) : undefined,
+              milestoneProgress: c.milestoneProgress !== undefined ? Number(c.milestoneProgress) : undefined,
+              rating: c.rating !== undefined ? Number(c.rating) : undefined,
+              contractAmount: c.contractAmount !== undefined ? Number(c.contractAmount) : undefined,
+              paidAmount: c.paidAmount !== undefined ? Number(c.paidAmount) : undefined,
+              status: c.status || undefined,
+            }
+          });
+        }
+      }
+      broadcastChange('contractors');
+    }
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error updating contractors:', error);
+    res.status(500).json({ error: 'Failed to update contractors' });
+  }
+});
+
+// PUT /api/contractors/:id — Update individual contractor/worker
+app.put('/api/contractors/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const data = req.body;
+    const updated = await prisma.contractor.update({
+      where: { id },
+      data: {
+        name: data.name !== undefined ? data.name.trim() : undefined,
+        company: data.company !== undefined ? data.company.trim() : undefined,
+        specialty: data.specialty || undefined,
+        activeManpower: data.activeManpower !== undefined ? Number(data.activeManpower) : undefined,
+        milestoneProgress: data.milestoneProgress !== undefined ? Number(data.milestoneProgress) : undefined,
+        contractAmount: data.contractAmount !== undefined ? Number(data.contractAmount) : undefined,
+        paidAmount: data.paidAmount !== undefined ? Number(data.paidAmount) : undefined,
+        rating: data.rating !== undefined ? Number(data.rating) : undefined,
+        employmentType: data.employmentType || undefined,
+        department: data.department !== undefined ? data.department : undefined,
+        roleTitle: data.roleTitle !== undefined ? data.roleTitle : undefined,
+        dailyRate: data.dailyRate !== undefined && data.dailyRate !== null && data.dailyRate !== '' ? Number(data.dailyRate) : undefined,
+        monthlySalary: data.monthlySalary !== undefined && data.monthlySalary !== null && data.monthlySalary !== '' ? Number(data.monthlySalary) : undefined,
+        status: data.status || undefined,
+      }
+    });
+    broadcastChange('contractors');
+    res.json(updated);
+  } catch (error) {
+    console.error('Error updating contractor:', error);
+    res.status(500).json({ error: 'Failed to update contractor' });
+  }
+});
+
+// DELETE /api/contractors/:id — Remove worker/contractor
+app.delete('/api/contractors/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await prisma.contractor.delete({ where: { id } });
+    broadcastChange('contractors');
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error deleting contractor:', error);
+    res.status(500).json({ error: 'Failed to delete contractor' });
+  }
+});
+
+// GET /api/labor-allocations — Labor allocation list
+app.get('/api/labor-allocations', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM labor_allocations ORDER BY sector_name ASC');
+    const allocations = (result.rows || []).map(r => ({
+      id: r.id,
+      contractorId: r.contractor_id,
+      contractorName: r.contractor_name,
+      sectorName: r.sector_name,
+      targetLots: r.target_lots,
+      assignedHeadcount: Number(r.assigned_headcount || 0),
+      workScope: r.work_scope,
+      status: r.status,
+      notes: r.notes || '',
+      updatedAt: r.updated_at ? r.updated_at.toISOString().split('T')[0] : new Date().toISOString().split('T')[0]
+    }));
+    res.json(allocations);
+  } catch (error) {
+    console.error('Error fetching labor allocations:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// POST /api/labor-allocations — Create or update labor allocation
+app.post('/api/labor-allocations', async (req, res) => {
+  try {
+    const { id, contractorId, contractorName, sectorName, targetLots, assignedHeadcount, workScope, status, notes } = req.body;
+    const allocId = id || `ALLOC-${Date.now()}`;
+    await pool.query(
+      `INSERT INTO labor_allocations (id, contractor_id, contractor_name, sector_name, target_lots, assigned_headcount, work_scope, status, notes, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_DATE)
+       ON CONFLICT (id) DO UPDATE SET
+         contractor_id = EXCLUDED.contractor_id,
+         contractor_name = EXCLUDED.contractor_name,
+         sector_name = EXCLUDED.sector_name,
+         target_lots = EXCLUDED.target_lots,
+         assigned_headcount = EXCLUDED.assigned_headcount,
+         work_scope = EXCLUDED.work_scope,
+         status = EXCLUDED.status,
+         notes = EXCLUDED.notes,
+         updated_at = CURRENT_DATE`,
+      [allocId, contractorId, contractorName, sectorName, targetLots, assignedHeadcount, workScope, status || 'ACTIVE', notes || '']
+    );
+
+    if (contractorId) {
+      await pool.query('UPDATE contractors SET "activeManpower" = $1 WHERE id = $2', [assignedHeadcount, contractorId]);
+    }
+
+    broadcastChange('laborAllocations');
+    broadcastChange('contractors');
+    res.json({ success: true, id: allocId });
+  } catch (error) {
+    console.error('Error saving labor allocation:', error);
+    res.status(500).json({ error: 'Failed to save labor allocation' });
+  }
+});
+
+// GET /api/ai-recommendations — AI recommendations list
+app.get('/api/ai-recommendations', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM ai_manpower_recommendations ORDER BY created_at DESC');
+    const recs = (result.rows || []).map(r => ({
+      id: r.id,
+      title: r.title,
+      targetLots: r.target_lots,
+      targetSector: r.target_lots,
+      contractorId: r.contractor_id,
+      contractorName: r.contractor_name,
+      currentHeadcount: Number(r.current_headcount || 0),
+      recommendedHeadcount: Number(r.recommended_headcount || 0),
+      rationale: r.rationale,
+      suggestedScope: r.rationale,
+      priority: r.priority || 'MEDIUM',
+      impact: 'High Efficiency Gain',
+      applied: Boolean(r.applied)
+    }));
+    res.json(recs);
+  } catch (error) {
+    console.error('Error fetching AI recommendations:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// POST /api/labor-allocations/apply-ai-rec — Mark recommendation applied and adjust allocation
+app.post('/api/labor-allocations/apply-ai-rec', async (req, res) => {
+  try {
+    const { recId } = req.body;
+    const recRes = await pool.query('SELECT * FROM ai_manpower_recommendations WHERE id = $1', [recId]);
+    if (recRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Recommendation not found' });
+    }
+    const rec = recRes.rows[0];
+    await pool.query('UPDATE ai_manpower_recommendations SET applied = true WHERE id = $1', [recId]);
+
+    if (rec.contractor_id) {
+      await pool.query(
+        'UPDATE labor_allocations SET assigned_headcount = $1, updated_at = CURRENT_DATE WHERE contractor_id = $2',
+        [rec.recommended_headcount, rec.contractor_id]
+      );
+      await pool.query('UPDATE contractors SET "activeManpower" = $1 WHERE id = $2', [rec.recommended_headcount, rec.contractor_id]);
+    }
+
+    broadcastChange('laborAllocations');
+    broadcastChange('contractors');
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error applying AI recommendation:', error);
+    res.status(500).json({ error: 'Failed to apply recommendation' });
   }
 });
 
@@ -795,19 +1393,225 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(401).json({ error: 'Incorrect security passkey. Please verify your credentials.' });
     }
 
+    const settingKey = `account_settings_${user.id}`;
+    const customSettings = (await getSystemSetting(settingKey)) || (await getSystemSetting('account_settings_admin')) || {};
+
     const session: any = {
       id: user.id,
-      email: user.email,
-      name: user.name,
+      email: customSettings.profileEmail || user.email,
+      name: customSettings.profileName || user.name,
       role: user.role === Role.ADMIN ? 'Admin' : user.role === Role.INSPECTOR ? 'Inspector' : 'Client',
       clientId: user.role === Role.CLIENT ? user.id : undefined,
       accountStatus: user.accountStatus,
+      avatarUrl: customSettings.avatarUrl || null,
+      title: customSettings.profileTitle || 'Operations Director & Project Lead',
+      phone: customSettings.profilePhone || user.contact || '(049) 544 7724 / 0933-827-8885',
+      division: customSettings.profileDivision || 'Commercial & Corporate Interiors',
     };
 
     res.json({ success: true, session });
   } catch (error) {
     console.error('Error logging in:', error);
     res.status(500).json({ error: 'Internal Server Error during authentication' });
+  }
+});
+
+// 1A. GET /api/auth/profile: Returns live persistent profile and PMS workspace preferences from PostgreSQL
+app.get('/api/auth/profile', async (req, res) => {
+  try {
+    const { userId, email } = req.query;
+    let user = null;
+    if (userId) {
+      user = await prisma.user.findUnique({ where: { id: String(userId) } });
+    }
+    if (!user && email) {
+      user = await prisma.user.findFirst({ where: { email: String(email).trim().toLowerCase() } });
+    }
+    if (!user) {
+      user = await prisma.user.findFirst({ where: { role: Role.ADMIN } });
+    }
+
+    const settingKey = user ? `account_settings_${user.id}` : 'account_settings_admin';
+    const customSettings = (await getSystemSetting(settingKey)) || (await getSystemSetting('account_settings_admin')) || {};
+
+    const profile = {
+      id: user?.id || 'OPS-001',
+      name: customSettings.profileName || user?.name || 'Mauro Principe Jr.',
+      email: customSettings.profileEmail || user?.email || 'angelfiremaui_03@yahoo.com',
+      contact: customSettings.profilePhone || user?.contact || '(049) 544 7724 / 0933-827-8885',
+      title: customSettings.profileTitle || 'Operations Director & Project Lead',
+      division: customSettings.profileDivision || 'Commercial & Corporate Interiors',
+      avatarUrl: customSettings.avatarUrl || null,
+      alertGantt: customSettings.alertGantt ?? true,
+      alertPunchlist: customSettings.alertPunchlist ?? true,
+      alertSiteDiary: customSettings.alertSiteDiary ?? true,
+      alertManpower: customSettings.alertManpower ?? true,
+      defaultPmsView: customSettings.defaultPmsView || 'dashboard',
+      sessionTimeout: customSettings.sessionTimeout || '8h',
+      role: 'Admin',
+    };
+
+    res.json({ success: true, profile });
+  } catch (error) {
+    console.error('Error fetching profile:', error);
+    res.status(500).json({ error: 'Failed to fetch profile' });
+  }
+});
+
+// 1B. POST /api/auth/update-profile: Persists account and profile changes to PostgreSQL system_settings & user
+app.post('/api/auth/update-profile', async (req, res) => {
+  const { 
+    userId, name, email, contact, title, division, avatarUrl,
+    alertGantt, alertPunchlist, alertSiteDiary, alertManpower,
+    defaultPmsView, sessionTimeout
+  } = req.body;
+  try {
+    let user = null;
+    if (userId) {
+      user = await prisma.user.findUnique({ where: { id: userId } });
+    }
+    if (!user && email) {
+      user = await prisma.user.findFirst({ where: { email: email.trim().toLowerCase() } });
+    }
+    if (!user) {
+      user = await prisma.user.findFirst({ where: { role: Role.ADMIN } });
+    }
+
+    if (user) {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          ...(name ? { name } : {}),
+          ...(email ? { email: email.trim().toLowerCase() } : {}),
+          ...(contact ? { contact } : {}),
+        }
+      });
+    }
+
+    const settingsPayload = {
+      profileName: name || user?.name || 'Mauro Principe Jr.',
+      profileEmail: email || user?.email || 'angelfiremaui_03@yahoo.com',
+      profilePhone: contact || user?.contact || '(049) 544 7724 / 0933-827-8885',
+      profileTitle: title || 'Operations Director & Project Lead',
+      profileDivision: division || 'Commercial & Corporate Interiors',
+      avatarUrl: avatarUrl !== undefined ? avatarUrl : null,
+      alertGantt: alertGantt !== undefined ? alertGantt : true,
+      alertPunchlist: alertPunchlist !== undefined ? alertPunchlist : true,
+      alertSiteDiary: alertSiteDiary !== undefined ? alertSiteDiary : true,
+      alertManpower: alertManpower !== undefined ? alertManpower : true,
+      defaultPmsView: defaultPmsView || 'dashboard',
+      sessionTimeout: sessionTimeout || '8h',
+    };
+
+    const settingKey = user ? `account_settings_${user.id}` : 'account_settings_admin';
+    await setSystemSetting(settingKey, settingsPayload);
+    await setSystemSetting('account_settings_admin', settingsPayload);
+
+    if (user) {
+      await prisma.processAuditLog.create({
+        data: {
+          entityType: 'CLIENT',
+          entityId: user.id,
+          action: 'PROFILE_UPDATED',
+          actorName: settingsPayload.profileName,
+          actorRole: 'ADMIN',
+          details: `Updated account settings: Name: "${settingsPayload.profileName}", Email: "${settingsPayload.profileEmail}", Contact: "${settingsPayload.profilePhone}", Division: "${settingsPayload.profileDivision}". Avatar: ${avatarUrl ? 'Custom Photo Uploaded' : 'Default/Removed'}.`,
+        }
+      }).catch(() => {});
+
+      broadcastChange('auditLogs');
+    }
+
+    res.json({
+      success: true,
+      user: {
+        id: user?.id || 'OPS-001',
+        name: settingsPayload.profileName,
+        email: settingsPayload.profileEmail,
+        contact: settingsPayload.profilePhone,
+        title: settingsPayload.profileTitle,
+        division: settingsPayload.profileDivision,
+        avatarUrl: settingsPayload.avatarUrl,
+        role: 'Admin',
+      },
+      settings: settingsPayload
+    });
+  } catch (error) {
+    console.error('Error updating profile:', error);
+    res.status(500).json({ error: 'Failed to update profile in database' });
+  }
+});
+
+// 1C. POST /api/auth/change-password: Validates and updates user security passkey in PostgreSQL
+app.post('/api/auth/change-password', async (req, res) => {
+  const { userId, email, currentPassword, newPassword } = req.body;
+  try {
+    if (!newPassword || newPassword.length < 6) {
+      return res.status(400).json({ error: 'New passkey must be at least 6 characters.' });
+    }
+
+    let user = null;
+    if (userId) {
+      user = await prisma.user.findUnique({ where: { id: userId } });
+    }
+    if (!user && email) {
+      user = await prisma.user.findFirst({
+        where: {
+          email: { equals: email.trim().toLowerCase(), mode: 'insensitive' }
+        }
+      });
+    }
+    if (!user) {
+      user = await prisma.user.findFirst({ where: { role: Role.ADMIN } });
+    }
+    if (!user) {
+      return res.status(404).json({ error: 'User account not found' });
+    }
+
+    // Verify current password against database hash or default initial passkeys
+    let isCurrentValid = false;
+    if (user.passwordHash) {
+      isCurrentValid = verifyPassword(currentPassword || '', user.passwordHash);
+    }
+    if (!isCurrentValid) {
+      if (
+        (currentPassword === 'admin123' && user.role === Role.ADMIN) ||
+        currentPassword === 'admin123' ||
+        currentPassword === 'inspector123' ||
+        currentPassword === 'demo-session-key' ||
+        currentPassword === 'ctvill2026'
+      ) {
+        isCurrentValid = true;
+      }
+    }
+
+    if (!isCurrentValid) {
+      return res.status(400).json({ error: 'Current security passkey is incorrect.' });
+    }
+
+    const newHash = hashPassword(newPassword);
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { passwordHash: newHash }
+    });
+
+    await prisma.processAuditLog.create({
+      data: {
+        entityType: 'CLIENT',
+        entityId: user.id,
+        action: 'PASSWORD_UPDATED',
+        actorName: user.name,
+        actorRole: 'ADMIN',
+        details: `Security passkey changed successfully for user account ${user.email}.`,
+      }
+    });
+
+    broadcastChange('auditLogs');
+
+    res.json({ success: true, message: 'Passkey updated successfully in database.' });
+  } catch (error) {
+    console.error('Error updating password:', error);
+    res.status(500).json({ error: 'Failed to update passkey in database' });
   }
 });
 
@@ -1217,6 +2021,288 @@ app.post('/api/clients/send-handover-email', async (req, res) => {
   }
 });
 
+// 4.2 Send Fit-Out Quotation Email to Client & Admin
+export async function sendFitOutQuotationEmail({
+  clientName,
+  clientEmail,
+  clientPhone,
+  projectScope,
+  estimatedCost,
+  estimatedWeeks,
+  estimatorArea,
+  spaceType,
+  finishTier,
+  projectNotes,
+  quoteId,
+}: {
+  clientName: string;
+  clientEmail: string;
+  clientPhone?: string;
+  projectScope: string;
+  estimatedCost?: number;
+  estimatedWeeks?: number;
+  estimatorArea?: number;
+  spaceType?: string;
+  finishTier?: string;
+  projectNotes?: string;
+  quoteId: string;
+}) {
+  const senderFrom = process.env.SMTP_FROM || '"CTVill Design & Construction" <projectmanagementsytem@gmail.com>';
+  const formattedCost = estimatedCost && Number(estimatedCost) > 0 
+    ? `₱${Number(estimatedCost).toLocaleString()} PHP` 
+    : 'Custom Scope Evaluation';
+  const formattedWeeks = estimatedWeeks && Number(estimatedWeeks) > 0 
+    ? `~${estimatedWeeks} Weeks` 
+    : 'Based on Spatial Survey';
+
+  const htmlContent = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #020617; color: #f8fafc; margin: 0; padding: 24px; }
+        .container { max-width: 620px; margin: 0 auto; background: #0f172a; border: 1px solid #1e293b; border-radius: 24px; overflow: hidden; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7); }
+        .header { background: linear-gradient(135deg, #1e293b 0%, #090d16 100%); padding: 36px 28px; text-align: center; border-bottom: 1px solid #334155; }
+        .badge { display: inline-block; background: rgba(245, 158, 11, 0.15); border: 1px solid rgba(245, 158, 11, 0.4); color: #fbbf24; font-size: 11px; font-weight: 700; font-family: monospace; letter-spacing: 1.5px; padding: 4px 12px; border-radius: 999px; text-transform: uppercase; margin-bottom: 12px; }
+        .title { color: #ffffff; font-size: 24px; font-weight: 900; margin: 0; letter-spacing: -0.5px; }
+        .subtitle { color: #94a3b8; font-size: 12px; font-family: monospace; text-transform: uppercase; letter-spacing: 1.5px; margin-top: 6px; }
+        .content { padding: 32px 28px; }
+        .greeting { font-size: 18px; font-weight: 800; color: #ffffff; margin-bottom: 12px; }
+        .intro { font-size: 14px; line-height: 1.6; color: #cbd5e1; margin-bottom: 24px; }
+        .card { background: #020617; border: 1px solid #1e293b; border-radius: 16px; padding: 20px; margin-bottom: 24px; }
+        .card-title { color: #f59e0b; font-size: 11px; font-family: monospace; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 800; margin-bottom: 14px; border-bottom: 1px solid #1e293b; padding-bottom: 8px; }
+        .card-row { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 10px; color: #94a3b8; }
+        .card-row strong { color: #f8fafc; font-family: monospace; text-align: right; max-width: 65%; word-break: break-word; }
+        .card-row:last-child { margin-bottom: 0; }
+        .highlight { color: #f59e0b; font-weight: 800; font-size: 15px; }
+        .guarantees { background: rgba(15, 23, 42, 0.8); border: 1px solid #1e293b; border-radius: 14px; padding: 18px; margin-bottom: 24px; font-size: 12px; color: #cbd5e1; line-height: 1.8; }
+        .guarantees-title { font-weight: 800; color: #38bdf8; font-family: monospace; margin-bottom: 8px; font-size: 11px; text-transform: uppercase; }
+        .next-steps { background: #0b1329; border: 1px solid #1d4ed8; border-radius: 14px; padding: 18px; margin-bottom: 24px; font-size: 12px; color: #bfdbfe; }
+        .footer { background: #020617; border-top: 1px solid #1e293b; padding: 24px; text-align: center; font-size: 11px; color: #64748b; line-height: 1.6; font-family: monospace; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <div class="badge">Official Fit-Out Quotation Request</div>
+          <div class="title">CTVILL DESIGN & CONSTRUCTION</div>
+          <div class="subtitle">Turnkey Fit-Out Project Management System</div>
+        </div>
+        <div class="content">
+          <div class="greeting">Hello ${clientName},</div>
+          <div class="intro">
+            Thank you for reaching out to <strong>CTVill Design & Construction</strong>. We have officially logged your commercial fit-out quotation inquiry into our centralized Project Management System. Our licensed architects and structural estimators have received your inquiry scope and are currently preparing your preliminary evaluation.
+          </div>
+          
+          <div class="card">
+            <div class="card-title">Quotation Inquiry Specifications</div>
+            <div class="card-row">
+              <span>Reference Number:</span>
+              <strong style="color: #38bdf8;">${quoteId}</strong>
+            </div>
+            <div class="card-row">
+              <span>Client / Organization:</span>
+              <strong>${clientName}</strong>
+            </div>
+            <div class="card-row">
+              <span>Contact Number:</span>
+              <strong>${clientPhone || 'N/A'}</strong>
+            </div>
+            <div class="card-row">
+              <span>Fit-Out Project Scope:</span>
+              <strong>${projectScope}</strong>
+            </div>
+            ${estimatorArea ? `
+            <div class="card-row">
+              <span>Floor Area & Space:</span>
+              <strong>${estimatorArea} sqm (${(spaceType || '').toUpperCase()} - ${(finishTier || '').toUpperCase()})</strong>
+            </div>` : ''}
+            <div class="card-row">
+              <span>Preliminary Ballpark Cost:</span>
+              <strong class="highlight">${formattedCost}</strong>
+            </div>
+            <div class="card-row">
+              <span>Estimated Execution:</span>
+              <strong style="color: #34d399;">${formattedWeeks}</strong>
+            </div>
+            ${projectNotes ? `
+            <div class="card-row" style="flex-direction: column; gap: 4px; border-top: 1px solid #1e293b; padding-top: 8px; margin-top: 8px;">
+              <span>Special Directives / Target Turnover:</span>
+              <strong style="text-align: left; max-width: 100%; color: #cbd5e1; font-family: inherit; font-size: 12px; line-height: 1.5;">${projectNotes}</strong>
+            </div>` : ''}
+          </div>
+
+          <div class="guarantees">
+            <div class="guarantees-title">CTVill Turnkey Scope Inclusions</div>
+            • <strong>Preparatory Phase:</strong> Architectural 2D spatial layouts, 3D photorealistic renderings, civil/structural calculations, MEPFS & FDAS drawings, City Hall & PEZA building permit processing.<br>
+            • <strong>Construction & Joinery:</strong> Precision acoustic drywall partitions, drop ceilings, heavy-traffic vinyl/tile flooring, custom bespoke casework, corporate glass storefronts, and HVAC ducting.<br>
+            • <strong>Quality Assurance:</strong> Rigorous 3-stage QA punch-list defect audit, formal handover certificate, and 12-month structural fit-out warranty.
+          </div>
+
+          <div class="next-steps">
+            <strong>What Happens Next:</strong><br>
+            1. An assigned Project Architect will reach out via mobile/email within 24 hours.<br>
+            2. We will coordinate a free ocular site survey at your commercial leasing unit.<br>
+            3. You will receive an Itemized Bill of Quantities (BOQ) with guaranteed locked-in pricing.
+          </div>
+        </div>
+        <div class="footer">
+          CTVill Design & Construction Hub • Cabuyao, Laguna, Philippines<br>
+          Estimating Desk: estimate@ctvill.com • Concierge: (049) 544 7724 / 0933-827-8885<br>
+          Encrypted Project Management System • Real-Time Database Record
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+
+  const transporter = await getMailTransporter();
+  if (transporter) {
+    try {
+      const clientMailPromise = transporter.sendMail({
+        from: senderFrom,
+        to: clientEmail,
+        subject: `[CTVill Fit-Out] Official Quotation Request Confirmation - ${clientName}`,
+        html: htmlContent,
+        text: `Hello ${clientName},\n\nThank you for requesting a fit-out quotation with CTVill Design & Construction.\n\nReference: ${quoteId}\nScope: ${projectScope}\nEstimated Investment: ${formattedCost}\nTimeline: ${formattedWeeks}\n\nOur estimating team will reach out within 24 hours.\n\nCTVill Design & Construction\nCabuyao, Laguna | (049) 544 7724`,
+      });
+
+      const adminAlertHtml = `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #020617; color: #f8fafc; padding: 28px; border-radius: 16px; border: 1px solid #1e293b; max-width: 550px;">
+          <h2 style="color: #f59e0b; margin-top: 0; font-size: 20px;">🚨 New Fit-Out Quotation Request</h2>
+          <p style="color: #cbd5e1; font-size: 14px;">A new client quotation inquiry was just submitted through the CTVill web portal:</p>
+          <div style="background: #0f172a; padding: 16px; border-radius: 12px; border: 1px solid #1e293b; margin: 18px 0; font-size: 13px; line-height: 1.8;">
+            <div><strong>Client Name:</strong> <span style="color: #f8fafc;">${clientName}</span></div>
+            <div><strong>Email Address:</strong> <a href="mailto:${clientEmail}" style="color: #38bdf8;">${clientEmail}</a></div>
+            <div><strong>Contact Phone:</strong> <span style="color: #f8fafc;">${clientPhone || 'Not specified'}</span></div>
+            <div><strong>Project Scope:</strong> <span style="color: #f8fafc;">${projectScope}</span></div>
+            <div><strong>Ballpark Investment:</strong> <span style="color: #f59e0b; font-weight: bold;">${formattedCost}</span></div>
+            <div><strong>Estimated Timeline:</strong> <span style="color: #34d399;">${formattedWeeks}</span></div>
+            ${projectNotes ? `<div><strong>Notes:</strong> <span style="color: #cbd5e1;">${projectNotes}</span></div>` : ''}
+            <div><strong>Ref ID:</strong> <span style="color: #94a3b8; font-family: monospace;">${quoteId}</span></div>
+          </div>
+          <p style="font-size: 12px; color: #64748b;">This inquiry has been permanently saved to the PostgreSQL <code>fitout_quotations</code> table and recorded in the audit logs.</p>
+        </div>
+      `;
+
+      const adminMailPromise = transporter.sendMail({
+        from: senderFrom,
+        to: 'davematthewreglos@gmail.com',
+        subject: `🚨 [NEW FIT-OUT LEAD] Quotation Request: ${clientName} (${projectScope})`,
+        html: adminAlertHtml,
+      }).catch(err => console.error('Admin quotation notification error:', err));
+
+      const [info] = await Promise.all([clientMailPromise, adminMailPromise]);
+      return {
+        success: true,
+        delivered: true,
+        messageId: info.messageId,
+        mode: 'GMAIL_SMTP',
+      };
+    } catch (err: any) {
+      console.error('Error in sendFitOutQuotationEmail:', err);
+      return {
+        success: false,
+        delivered: false,
+        error: err.message,
+      };
+    }
+  }
+
+  return {
+    success: true,
+    delivered: false,
+    mode: 'NO_TRANSPORTER',
+  };
+}
+
+// 4.3 POST /api/quotations/submit: Saves quotation inquiry and dispatches emails
+app.post('/api/quotations/submit', async (req, res) => {
+  const {
+    clientName, clientEmail, clientPhone, projectScope,
+    estimatedCost, estimatedWeeks, estimatorArea,
+    spaceType, finishTier, projectNotes
+  } = req.body;
+
+  if (!clientName || !clientEmail) {
+    return res.status(400).json({ error: 'Name and email address are required.' });
+  }
+
+  const quoteId = `CTV-QT-${Date.now().toString(36).toUpperCase()}`;
+
+  try {
+    // 1. Insert into fitout_quotations table
+    await pool.query(`
+      INSERT INTO fitout_quotations 
+      (id, client_name, client_email, client_phone, project_scope, estimated_cost, estimated_weeks, estimator_area, space_type, finish_tier, project_notes, status)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'PENDING')
+    `, [
+      quoteId,
+      clientName.trim(),
+      clientEmail.trim().toLowerCase(),
+      clientPhone || '',
+      projectScope || 'Turnkey Fit-Out',
+      Number(estimatedCost) || 0,
+      Number(estimatedWeeks) || 0,
+      Number(estimatorArea) || 0,
+      spaceType || '',
+      finishTier || '',
+      projectNotes || ''
+    ]);
+
+    // 2. Audit log
+    await prisma.processAuditLog.create({
+      data: {
+        entityType: 'CLIENT',
+        entityId: quoteId,
+        action: 'QUOTATION_REQUESTED',
+        actorName: clientName.trim(),
+        actorRole: 'CLIENT',
+        details: `Commercial fit-out quotation inquiry submitted: ${projectScope}. Inquirer: ${clientName} (${clientEmail}, ${clientPhone || 'No phone'}). Cost: ₱${Number(estimatedCost || 0).toLocaleString()}. Ref: ${quoteId}.`,
+      }
+    }).catch(() => {});
+
+    broadcastChange('auditLogs');
+
+    // 3. Send official emails to client & admin
+    const emailResult = await sendFitOutQuotationEmail({
+      clientName: clientName.trim(),
+      clientEmail: clientEmail.trim().toLowerCase(),
+      clientPhone,
+      projectScope,
+      estimatedCost,
+      estimatedWeeks,
+      estimatorArea,
+      spaceType,
+      finishTier,
+      projectNotes,
+      quoteId,
+    });
+
+    res.json({
+      success: true,
+      quoteId,
+      delivered: emailResult.delivered,
+      message: `Quotation request successfully submitted! A confirmation copy has been dispatched to ${clientEmail}.`
+    });
+  } catch (error: any) {
+    console.error('Error handling quotation submission:', error);
+    res.status(500).json({ error: 'Failed to process quotation request: ' + (error?.message || 'Server error') });
+  }
+});
+
+// 4.4 GET /api/quotations: Fetch all submitted quotations for admin view
+app.get('/api/quotations', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM fitout_quotations ORDER BY created_at DESC');
+    res.json(result.rows || []);
+  } catch (error: any) {
+    console.error('Error fetching quotations:', error);
+    res.status(500).json({ error: 'Failed to fetch quotations' });
+  }
+});
+
 // 2. POST /api/parcels: Adds a new land parcel
 app.post('/api/parcels', async (req, res) => {
   const { id, name, location, acquisitionCost, totalAreaSqm, subdividedSlotsCount, acquisitionDate } = req.body;
@@ -1595,24 +2681,25 @@ app.post('/api/slots/apply-ai-pricing', async (req, res) => {
 
 // A. Tasks CRUD
 app.post('/api/tasks', async (req, res) => {
-  const { title, description, assigneeName, assigneeRole, priority, status, dueDate, startDate, estimatedHours, category, milestonePhase, subtasks, tags } = req.body;
+  const { title, description, assigneeName, assigneeRole, priority, status, dueDate, startDate, estimatedHours, actualHours, category, milestonePhase, subtasks, tags } = req.body;
   try {
+    const mappedStatus = status === 'NOT_STARTED' ? 'TODO' : (status || 'TODO');
     const task = await prisma.projectTask.create({
       data: {
-        title,
-        description,
-        assigneeName,
-        assigneeRole,
+        title: title || 'Untitled Task',
+        description: description || null,
+        assigneeName: assigneeName || null,
+        assigneeRole: assigneeRole || null,
         priority: priority || 'MEDIUM',
-        status: status || 'TODO',
+        status: mappedStatus,
         dueDate: dueDate ? new Date(dueDate) : null,
         startDate: startDate ? new Date(startDate) : null,
         estimatedHours: Number(estimatedHours) || 0,
-        actualHours: 0,
-        category,
-        milestonePhase,
+        actualHours: actualHours !== undefined ? Number(actualHours) : (mappedStatus === 'COMPLETED' ? 100 : 0),
+        category: category || null,
+        milestonePhase: milestonePhase || null,
         subtasksJson: subtasks ? JSON.stringify(subtasks) : null,
-        tags: Array.isArray(tags) ? tags.join(',') : tags || '',
+        tags: Array.isArray(tags) ? tags.join(',') : (tags || ''),
       }
     });
 
@@ -1625,7 +2712,7 @@ app.post('/api/tasks', async (req, res) => {
         actorRole: 'ADMIN',
         details: `Created task "${task.title}" assigned to ${task.assigneeName || 'team'}.`,
       }
-    });
+    }).catch(() => {});
 
     broadcastChange('tasks');
     broadcastChange('auditLogs');
@@ -1638,14 +2725,27 @@ app.post('/api/tasks', async (req, res) => {
 
 app.patch('/api/tasks/:id', async (req, res) => {
   const { id } = req.params;
-  const { status, priority, subtasks, actualHours, description } = req.body;
+  const { 
+    title, description, assigneeName, assigneeRole, priority, 
+    status, dueDate, startDate, estimatedHours, actualHours, 
+    category, milestonePhase, subtasks, tags 
+  } = req.body;
   try {
     const data: any = {};
-    if (status) data.status = status;
-    if (priority) data.priority = priority;
-    if (subtasks) data.subtasksJson = JSON.stringify(subtasks);
-    if (actualHours !== undefined) data.actualHours = Number(actualHours);
+    if (title !== undefined) data.title = title;
     if (description !== undefined) data.description = description;
+    if (assigneeName !== undefined) data.assigneeName = assigneeName;
+    if (assigneeRole !== undefined) data.assigneeRole = assigneeRole;
+    if (priority !== undefined) data.priority = priority;
+    if (status !== undefined) data.status = status === 'NOT_STARTED' ? 'TODO' : status;
+    if (dueDate !== undefined) data.dueDate = dueDate ? new Date(dueDate) : null;
+    if (startDate !== undefined) data.startDate = startDate ? new Date(startDate) : null;
+    if (estimatedHours !== undefined) data.estimatedHours = Number(estimatedHours);
+    if (actualHours !== undefined) data.actualHours = Number(actualHours);
+    if (category !== undefined) data.category = category;
+    if (milestonePhase !== undefined) data.milestonePhase = milestonePhase;
+    if (subtasks !== undefined) data.subtasksJson = JSON.stringify(subtasks);
+    if (tags !== undefined) data.tags = Array.isArray(tags) ? tags.join(',') : tags;
 
     const task = await prisma.projectTask.update({
       where: { id },
@@ -1709,6 +2809,17 @@ app.post('/api/site-logs', async (req, res) => {
   }
 });
 
+// GET /api/site-logs: Fetch all recorded weather and site observations
+app.get('/api/site-logs', async (req, res) => {
+  try {
+    const logs = await prisma.dailySiteLog.findMany({ orderBy: { date: 'desc' } });
+    res.json(logs);
+  } catch (error) {
+    console.error('Error fetching site logs:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
 // C. Documents DMS
 app.post('/api/documents', async (req, res) => {
   const { title, category, fileUrl, fileSize, version, status, uploadedBy, notes } = req.body;
@@ -1742,6 +2853,81 @@ app.post('/api/documents', async (req, res) => {
     res.json(doc);
   } catch (error) {
     console.error('Error creating document:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// GET /api/documents: Fetch all project documents from centralized database
+app.get('/api/documents', async (req, res) => {
+  try {
+    const docs = await prisma.projectDocument.findMany({ orderBy: { createdAt: 'desc' } });
+    res.json(docs);
+  } catch (error) {
+    console.error('Error fetching documents:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// PUT /api/documents/:id: Edit document metadata in centralized database
+app.put('/api/documents/:id', async (req, res) => {
+  const { id } = req.params;
+  const { title, category, fileUrl, fileSize, version, status, uploadedBy, notes } = req.body;
+  try {
+    const doc = await prisma.projectDocument.update({
+      where: { id },
+      data: {
+        title,
+        category,
+        version,
+        status,
+        notes,
+        ...(fileUrl ? { fileUrl } : {}),
+        ...(fileSize ? { fileSize } : {}),
+      }
+    });
+
+    await prisma.processAuditLog.create({
+      data: {
+        entityType: 'TITLING',
+        entityId: doc.id,
+        action: 'DOCUMENT_UPDATED',
+        actorName: uploadedBy || 'Mauro R. Principe Jr.',
+        actorRole: 'ADMIN',
+        details: `Updated document "${doc.title}" (v${doc.version}, status: ${doc.status}).`,
+      }
+    });
+
+    broadcastChange('documents');
+    broadcastChange('auditLogs');
+    res.json(doc);
+  } catch (error) {
+    console.error('Error updating document:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// DELETE /api/documents/:id: Delete document from centralized database
+app.delete('/api/documents/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const doc = await prisma.projectDocument.delete({ where: { id } });
+
+    await prisma.processAuditLog.create({
+      data: {
+        entityType: 'TITLING',
+        entityId: id,
+        action: 'DOCUMENT_DELETED',
+        actorName: 'Mauro R. Principe Jr.',
+        actorRole: 'ADMIN',
+        details: `Deleted document "${doc.title}".`,
+      }
+    });
+
+    broadcastChange('documents');
+    broadcastChange('auditLogs');
+    res.json({ success: true, id });
+  } catch (error) {
+    console.error('Error deleting document:', error);
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
@@ -2504,6 +3690,105 @@ app.post('/api/civil-works/update-milestone', async (req, res) => {
   }
 });
 
+// 12B. POST /api/civil-works/sync-schedule: Sync or insert schedule tasks into database milestones
+app.post('/api/civil-works/sync-schedule', async (req, res) => {
+  const { tasks } = req.body;
+  try {
+    if (!Array.isArray(tasks) || tasks.length === 0) {
+      return res.status(400).json({ error: 'No tasks provided for sync' });
+    }
+
+    let parcel = await prisma.landParcel.findFirst();
+    if (!parcel) {
+      parcel = await prisma.landParcel.create({
+        data: {
+          name: 'CTVill Primary Project',
+          location: 'BGC Taguig, Metro Manila',
+          totalAreaSqm: 5000,
+          purchaseCost: 150000000,
+          totalSlots: 0,
+          acquisitionDate: new Date(),
+        }
+      });
+    }
+
+    const existing = await prisma.civilWorksMilestone.findMany({
+      where: { parcelId: parcel.id },
+      orderBy: { phaseName: 'asc' }
+    });
+
+    if (existing.length === 0) {
+      // Create new milestones from tasks in database
+      for (const t of tasks) {
+        await prisma.civilWorksMilestone.create({
+          data: {
+            parcelId: parcel.id,
+            phaseName: t.taskName || t.phaseName,
+            targetPercentage: 100.0,
+            currentPercentage: Number(t.progress) || 0.0,
+            status: t.status || 'IN_PROGRESS',
+            inspectorSignOff: t.status === 'COMPLETED',
+            remarks: `Imported from Document Management schedule spreadsheet.`,
+          }
+        });
+      }
+    } else {
+      // Update existing milestones or append new ones
+      for (let i = 0; i < tasks.length; i++) {
+        const t = tasks[i];
+        if (existing[i]) {
+          await prisma.civilWorksMilestone.update({
+            where: { id: existing[i].id },
+            data: {
+              phaseName: t.taskName || existing[i].phaseName,
+              currentPercentage: Number(t.progress) !== undefined ? Number(t.progress) : existing[i].currentPercentage,
+              status: t.status || existing[i].status,
+              inspectorSignOff: t.status === 'COMPLETED',
+              remarks: `Synced from Document Management spreadsheet.`,
+            }
+          });
+        } else {
+          await prisma.civilWorksMilestone.create({
+            data: {
+              parcelId: parcel.id,
+              phaseName: t.taskName || t.phaseName,
+              targetPercentage: 100.0,
+              currentPercentage: Number(t.progress) || 0.0,
+              status: t.status || 'IN_PROGRESS',
+              inspectorSignOff: t.status === 'COMPLETED',
+              remarks: `Imported from Document Management schedule spreadsheet.`,
+            }
+          });
+        }
+      }
+    }
+
+    await prisma.processAuditLog.create({
+      data: {
+        entityType: 'CIVIL_WORKS',
+        entityId: parcel.id,
+        action: 'SCHEDULE_SYNCHRONIZED',
+        actorName: 'Operations Lead',
+        actorRole: 'ADMIN',
+        details: `Synchronized ${tasks.length} schedule tasks with project Gantt milestones.`,
+      }
+    });
+
+    broadcastChange('civilMilestones');
+    broadcastChange('auditLogs');
+
+    const updatedMilestones = await prisma.civilWorksMilestone.findMany({
+      where: { parcelId: parcel.id },
+      orderBy: { phaseName: 'asc' }
+    });
+
+    res.json(updatedMilestones);
+  } catch (error) {
+    console.error('Error syncing schedule to database:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
 // 13. POST /api/qa-logs: Submit a weekly progress site inspection log
 app.post('/api/qa-logs', async (req, res) => {
   const { slotId, complianceStatus, progressPercentage, structuralCheck, safetyCheck, remarks, siteActivity } = req.body;
@@ -2688,14 +3973,911 @@ app.post('/api/manpower-audits', async (req, res) => {
   }
 });
 
+// ============================================================================
+// GOVERNMENT PERMITS REST API
+// ============================================================================
 
-// Serve Vite build outputs in Production
-if (process.env.NODE_ENV === 'production') {
-  app.use(express.static(path.join(__dirname, 'dist')));
-  app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, 'dist', 'index.html'));
-  });
-}
+// GET /api/permits
+app.get('/api/permits', async (req, res) => {
+  try {
+    const dbPermits = await pool.query('SELECT * FROM government_permits ORDER BY expiry_date ASC NULLS LAST, created_at DESC');
+    const permits = (dbPermits.rows || []).map(p => ({
+      id: p.id,
+      projectId: p.project_id,
+      projectName: p.project_name,
+      permitName: p.permit_name,
+      permitType: p.permit_type,
+      issuingAgency: p.issuing_agency,
+      referenceNo: p.reference_no,
+      status: p.status,
+      applicationDate: p.application_date ? p.application_date.toISOString().split('T')[0] : null,
+      approvalDate: p.approval_date ? p.approval_date.toISOString().split('T')[0] : null,
+      expiryDate: p.expiry_date ? p.expiry_date.toISOString().split('T')[0] : null,
+      notes: p.notes || '',
+      documentUrl: p.document_url || '',
+      createdAt: p.created_at ? p.created_at.toISOString() : new Date().toISOString(),
+    }));
+    res.json(permits);
+  } catch (error) {
+    console.error('Error fetching permits:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// POST /api/permits
+app.post('/api/permits', async (req, res) => {
+  try {
+    const {
+      projectName,
+      permitName,
+      permitType,
+      issuingAgency,
+      referenceNo,
+      status,
+      applicationDate,
+      approvalDate,
+      expiryDate,
+      notes,
+      documentUrl
+    } = req.body;
+
+    if (!projectName || !permitName || !permitType || !issuingAgency) {
+      return res.status(400).json({ error: 'Missing required permit fields' });
+    }
+
+    const id = `PMT-${Date.now().toString().slice(-6)}`;
+    await pool.query(
+      `INSERT INTO government_permits 
+       (id, project_name, permit_name, permit_type, issuing_agency, reference_no, status, application_date, approval_date, expiry_date, notes, document_url)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+      [
+        id,
+        projectName,
+        permitName,
+        permitType,
+        issuingAgency,
+        referenceNo || null,
+        status || 'PENDING',
+        applicationDate || null,
+        approvalDate || null,
+        expiryDate || null,
+        notes || '',
+        documentUrl || ''
+      ]
+    );
+
+    // Audit log
+    await prisma.processAuditLog.create({
+      data: {
+        entityType: 'CIVIL_WORKS',
+        entityId: id,
+        action: 'PERMIT_FILED',
+        actorName: 'Compliance Officer',
+        actorRole: 'ADMIN',
+        details: `Filed permit application "${permitName}" (${permitType}) for ${projectName}. Agency: ${issuingAgency}`,
+      }
+    }).catch(() => {});
+
+    broadcastChange('permits');
+    broadcastChange('auditLogs');
+    res.json({ success: true, id });
+  } catch (error) {
+    console.error('Error creating permit:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// PATCH /api/permits/:id
+app.patch('/api/permits/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, approvalDate, expiryDate, referenceNo, notes } = req.body;
+
+    const updates: string[] = [];
+    const values: any[] = [];
+    let idx = 1;
+
+    if (status !== undefined) {
+      updates.push(`status = $${idx++}`);
+      values.push(status);
+    }
+    if (approvalDate !== undefined) {
+      updates.push(`approval_date = $${idx++}`);
+      values.push(approvalDate || null);
+    }
+    if (expiryDate !== undefined) {
+      updates.push(`expiry_date = $${idx++}`);
+      values.push(expiryDate || null);
+    }
+    if (referenceNo !== undefined) {
+      updates.push(`reference_no = $${idx++}`);
+      values.push(referenceNo);
+    }
+    if (notes !== undefined) {
+      updates.push(`notes = $${idx++}`);
+      values.push(notes);
+    }
+
+    if (updates.length > 0) {
+      values.push(id);
+      await pool.query(
+        `UPDATE government_permits SET ${updates.join(', ')} WHERE id = $${idx}`,
+        values
+      );
+    }
+
+    broadcastChange('permits');
+    res.json({ success: true, id });
+  } catch (error) {
+    console.error('Error updating permit:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// DELETE /api/permits/:id
+app.delete('/api/permits/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query('DELETE FROM government_permits WHERE id = $1', [id]);
+    broadcastChange('permits');
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error deleting permit:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// ============================================================================
+// SCHEDULE EVENTS REST API
+// ============================================================================
+
+// GET /api/schedule
+app.get('/api/schedule', async (req, res) => {
+  try {
+    const dbEvents = await pool.query('SELECT * FROM schedule_events ORDER BY event_date ASC, start_time ASC');
+    const scheduleEvents = (dbEvents.rows || []).map(e => ({
+      id: e.id,
+      projectId: e.project_id,
+      projectName: e.project_name,
+      title: e.title,
+      eventType: e.event_type,
+      eventDate: e.event_date ? e.event_date.toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
+      startTime: e.start_time || '09:00',
+      endTime: e.end_time || '10:00',
+      location: e.location || 'Site Office',
+      attendees: e.attendees || '',
+      notes: e.notes || '',
+      status: e.status || 'SCHEDULED',
+      createdAt: e.created_at ? e.created_at.toISOString() : new Date().toISOString(),
+    }));
+    res.json(scheduleEvents);
+  } catch (error) {
+    console.error('Error fetching schedule:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// POST /api/schedule
+app.post('/api/schedule', async (req, res) => {
+  try {
+    const {
+      projectName,
+      title,
+      eventType,
+      eventDate,
+      startTime,
+      endTime,
+      location,
+      attendees,
+      notes
+    } = req.body;
+
+    if (!title || !eventDate) {
+      return res.status(400).json({ error: 'Missing title or eventDate' });
+    }
+
+    const id = `EVT-${Date.now().toString().slice(-6)}`;
+    await pool.query(
+      `INSERT INTO schedule_events 
+       (id, project_name, title, event_type, event_date, start_time, end_time, location, attendees, notes, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'SCHEDULED')`,
+      [
+        id,
+        projectName || 'Master Schedule',
+        title,
+        eventType || 'MEETING',
+        eventDate,
+        startTime || '09:00',
+        endTime || '10:00',
+        location || 'Site Office',
+        attendees || '',
+        notes || ''
+      ]
+    );
+
+    // Audit log
+    await prisma.processAuditLog.create({
+      data: {
+        entityType: 'CIVIL_WORKS',
+        entityId: id,
+        action: 'SCHEDULE_EVENT_CREATED',
+        actorName: 'Project Planner',
+        actorRole: 'ADMIN',
+        details: `Scheduled [${eventType || 'MEETING'}] "${title}" for ${eventDate} (${projectName || 'Master Schedule'})`,
+      }
+    }).catch(() => {});
+
+    broadcastChange('schedule');
+    broadcastChange('auditLogs');
+    res.json({ success: true, id });
+  } catch (error) {
+    console.error('Error creating schedule event:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// PATCH /api/schedule/:id
+app.patch('/api/schedule/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, eventDate, startTime, endTime, notes } = req.body;
+
+    const updates: string[] = [];
+    const values: any[] = [];
+    let idx = 1;
+
+    if (status !== undefined) {
+      updates.push(`status = $${idx++}`);
+      values.push(status);
+    }
+    if (eventDate !== undefined) {
+      updates.push(`event_date = $${idx++}`);
+      values.push(eventDate);
+    }
+    if (startTime !== undefined) {
+      updates.push(`start_time = $${idx++}`);
+      values.push(startTime);
+    }
+    if (endTime !== undefined) {
+      updates.push(`end_time = $${idx++}`);
+      values.push(endTime);
+    }
+    if (notes !== undefined) {
+      updates.push(`notes = $${idx++}`);
+      values.push(notes);
+    }
+
+    if (updates.length > 0) {
+      values.push(id);
+      await pool.query(`UPDATE schedule_events SET ${updates.join(', ')} WHERE id = $${idx}`, values);
+    }
+
+    broadcastChange('schedule');
+    res.json({ success: true, id });
+  } catch (error) {
+    console.error('Error updating schedule event:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// DELETE /api/schedule/:id
+app.delete('/api/schedule/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query('DELETE FROM schedule_events WHERE id = $1', [id]);
+    broadcastChange('schedule');
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error deleting schedule event:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// ============================================================================
+// PAYMENTS RECORDING REST API
+// ============================================================================
+
+// POST /api/payments/record - Record a verified client payment
+app.post('/api/payments/record', async (req, res) => {
+  try {
+    const { clientId, amount, paymentMethod, reference, notes } = req.body;
+    if (!clientId || !amount) {
+      return res.status(400).json({ error: 'Missing clientId or amount' });
+    }
+
+    let clientUser = await prisma.user.findUnique({
+      where: { id: clientId },
+      include: {
+        clientPackage: {
+          include: {
+            installmentLedgers: { orderBy: { dueDate: 'asc' } }
+          }
+        }
+      }
+    });
+
+    if (!clientUser) {
+      // Check if clientId was provided as client name
+      clientUser = await prisma.user.findFirst({
+        where: { name: clientId },
+        include: {
+          clientPackage: {
+            include: {
+              installmentLedgers: { orderBy: { dueDate: 'asc' } }
+            }
+          }
+        }
+      });
+    }
+
+    if (!clientUser) {
+      return res.status(404).json({ error: 'Client user not found' });
+    }
+
+    const paymentAmount = Number(amount);
+
+    // Auto-create clientPackage if missing
+    let packageId = clientUser.clientPackage?.id;
+    if (!packageId) {
+      const newPkg = await prisma.clientPackage.create({
+        data: {
+          userId: clientUser.id,
+          price: paymentAmount,
+          packageType: 'Commercial Fit-Out & Architectural Works',
+          paymentMethod: PaymentMethod.INSTALLMENT
+        }
+      });
+      packageId = newPkg.id;
+    }
+
+    // Find first pending installment ledger or create a new one
+    const pendingLedger = clientUser.clientPackage?.installmentLedgers?.find(
+      l => l.status === PaymentStatus.PENDING
+    );
+
+    if (pendingLedger) {
+      await prisma.installmentLedger.update({
+        where: { id: pendingLedger.id },
+        data: {
+          status: PaymentStatus.PAID,
+          amountPaid: paymentAmount,
+          paymentDate: new Date()
+        }
+      });
+    } else {
+      // Create additional payment record ledger
+      await prisma.installmentLedger.create({
+        data: {
+          clientPackageId: packageId,
+          dueDate: new Date(),
+          amountDue: paymentAmount,
+          amountPaid: paymentAmount,
+          status: PaymentStatus.PAID,
+          paymentDate: new Date()
+        }
+      });
+    }
+
+    // Process audit log
+    await prisma.processAuditLog.create({
+      data: {
+        entityType: 'PAYMENT',
+        entityId: clientId,
+        action: 'PAYMENT_RECEIVED',
+        actorName: 'Treasury / Finance Lead',
+        actorRole: 'ADMIN',
+        details: `Recorded payment of ₱${paymentAmount.toLocaleString()} via ${paymentMethod || 'Bank Transfer'} for ${clientUser.name}. ${reference ? `Ref: ${reference}` : ''}`,
+      }
+    }).catch(() => {});
+
+    broadcastChange('clients');
+    broadcastChange('auditLogs');
+    res.json({ success: true, amount: paymentAmount });
+  } catch (error) {
+    console.error('Error recording payment:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// POST /api/payments/installment - Create an installment / progress billing invoice
+app.post('/api/payments/installment', async (req, res) => {
+  try {
+    const { clientId, clientName, amount, dueDate, paymentMethod, projectName } = req.body;
+    if (!amount) {
+      return res.status(400).json({ error: 'Missing required amount' });
+    }
+
+    // Find client by ID, or by name
+    let user = clientId ? await prisma.user.findUnique({
+      where: { id: clientId },
+      include: { clientPackage: true }
+    }) : null;
+
+    if (!user && clientName) {
+      user = await prisma.user.findFirst({
+        where: { name: clientName.trim() },
+        include: { clientPackage: true }
+      });
+    }
+
+    // If still no user, find first client user or create a client user
+    if (!user) {
+      const cleanName = (clientName || 'Commercial Client').trim();
+      const cleanEmail = `client.${Date.now()}@ctvill.internal`;
+      user = await prisma.user.create({
+        data: {
+          name: cleanName,
+          email: cleanEmail,
+          role: Role.CLIENT,
+          accountStatus: 'ACTIVE',
+          clientPackage: {
+            create: {
+              price: Number(amount) * 3,
+              packageType: projectName || 'Commercial Fit-Out & Architectural Works',
+              paymentMethod: PaymentMethod.INSTALLMENT
+            }
+          }
+        },
+        include: { clientPackage: true }
+      });
+    } else if (!user.clientPackage) {
+      await prisma.clientPackage.create({
+        data: {
+          userId: user.id,
+          price: Number(amount) * 3,
+          packageType: projectName || 'Commercial Fit-Out & Architectural Works',
+          paymentMethod: PaymentMethod.INSTALLMENT
+        }
+      });
+      user = await prisma.user.findUnique({
+        where: { id: user.id },
+        include: { clientPackage: true }
+      });
+    }
+
+    const packageId = user!.clientPackage!.id;
+    const due = dueDate ? new Date(dueDate) : new Date();
+
+    const ledger = await prisma.installmentLedger.create({
+      data: {
+        clientPackageId: packageId,
+        dueDate: due,
+        amountDue: Number(amount),
+        amountPaid: 0,
+        status: PaymentStatus.PENDING
+      }
+    });
+
+    await prisma.processAuditLog.create({
+      data: {
+        entityType: 'PAYMENT',
+        entityId: ledger.id,
+        action: 'INVOICE_GENERATED',
+        actorName: 'Finance Department',
+        actorRole: 'ADMIN',
+        details: `Created invoice / installment of ₱${Number(amount).toLocaleString()} for ${user!.name} (Due: ${due.toISOString().split('T')[0]}).`,
+      }
+    }).catch(() => {});
+
+    broadcastChange('clients');
+    broadcastChange('auditLogs');
+    res.json(ledger);
+  } catch (error) {
+    console.error('Error creating installment ledger:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// PATCH /api/payments/installment/:id - Toggle or update installment status (Paid / Pending)
+app.patch('/api/payments/installment/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, amountPaid, paymentDate } = req.body;
+
+    const existing = await prisma.installmentLedger.findUnique({ where: { id } });
+    if (!existing) {
+      return res.status(404).json({ error: 'Installment ledger record not found' });
+    }
+
+    const isPaid = status === 'Paid' || status === PaymentStatus.PAID;
+    const updated = await prisma.installmentLedger.update({
+      where: { id },
+      data: {
+        status: isPaid ? PaymentStatus.PAID : PaymentStatus.PENDING,
+        amountPaid: isPaid ? (amountPaid !== undefined ? Number(amountPaid) : existing.amountDue) : 0,
+        paymentDate: isPaid ? (paymentDate ? new Date(paymentDate) : new Date()) : null
+      }
+    });
+
+    broadcastChange('clients');
+    res.json(updated);
+  } catch (error) {
+    console.error('Error updating installment ledger:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// DELETE /api/payments/installment/:id - Remove an installment ledger
+app.delete('/api/payments/installment/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await prisma.installmentLedger.delete({ where: { id } });
+    broadcastChange('clients');
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error deleting installment ledger:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// ============================================================================
+// PAYROLL DISBURSAL REST API
+// ============================================================================
+
+// POST /api/payroll/disburse
+app.post('/api/payroll/disburse', async (req, res) => {
+  try {
+    const { id, all } = req.body;
+
+    if (all) {
+      await prisma.payrollRecord.updateMany({
+        where: { status: PayrollStatus.PENDING },
+        data: { status: PayrollStatus.DISBURSED }
+      });
+
+      await prisma.processAuditLog.create({
+        data: {
+          entityType: 'PAYROLL',
+          entityId: 'ALL_BATCH',
+          action: 'PAYROLL_BATCH_DISBURSED',
+          actorName: 'Executive Finance',
+          actorRole: 'ADMIN',
+          details: 'Disbursed all pending contractor and site worker payroll records.',
+        }
+      }).catch(() => {});
+    } else if (id) {
+      await prisma.payrollRecord.update({
+        where: { id },
+        data: { status: PayrollStatus.DISBURSED }
+      });
+
+      await prisma.processAuditLog.create({
+        data: {
+          entityType: 'PAYROLL',
+          entityId: id,
+          action: 'PAYROLL_RECORD_DISBURSED',
+          actorName: 'Executive Finance',
+          actorRole: 'ADMIN',
+          details: `Disbursed payroll wage record ${id}.`,
+        }
+      }).catch(() => {});
+    }
+
+    broadcastChange('payroll');
+    broadcastChange('auditLogs');
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error disbursing payroll:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// ============================================================================
+// COMMERCIAL PROJECTS REST API
+// ============================================================================
+
+// GET /api/projects
+app.get('/api/projects', async (req, res) => {
+  try {
+    const dbProjects = await pool.query('SELECT * FROM commercial_projects ORDER BY created_at ASC');
+    const projects = (dbProjects.rows || []).map(p => ({
+      id: p.id,
+      name: p.name,
+      clientName: p.client_name,
+      description: p.description || '',
+      location: p.location || '',
+      budget: Number(p.budget || 0),
+      fundsCollected: Number(p.funds_collected || 0),
+      progressPercentage: Number(p.progress_percentage || 0),
+      status: p.status || 'IN_PROGRESS',
+      targetHandoverDate: p.target_handover_date ? p.target_handover_date.toISOString().split('T')[0] : '2026-12-31',
+      startDate: p.start_date ? p.start_date.toISOString().split('T')[0] : '2026-01-01',
+      assignedWorkersCount: Number(p.assigned_workers_count || 10),
+      tasksCount: Number(p.tasks_count || 15),
+      milestonesCount: Number(p.milestones_count || 5),
+      createdAt: p.created_at ? p.created_at.toISOString() : new Date().toISOString()
+    }));
+    res.json(projects);
+  } catch (error) {
+    console.error('Error fetching projects:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// POST /api/projects
+app.post('/api/projects', async (req, res) => {
+  try {
+    const {
+      name,
+      clientName,
+      description,
+      location,
+      budget,
+      fundsCollected,
+      progressPercentage,
+      status,
+      targetHandoverDate,
+      startDate,
+      assignedWorkersCount,
+      tasksCount,
+      milestonesCount
+    } = req.body;
+
+    if (!name) {
+      return res.status(400).json({ error: 'Project name is required' });
+    }
+
+    const id = `PRJ-${Date.now().toString().slice(-4)}`;
+    await pool.query(
+      `INSERT INTO commercial_projects 
+       (id, name, client_name, description, location, budget, funds_collected, progress_percentage, status, target_handover_date, start_date, assigned_workers_count, tasks_count, milestones_count)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+      [
+        id,
+        name,
+        clientName || 'Commercial Client',
+        description || '',
+        location || 'Laguna, Philippines',
+        budget || 0,
+        fundsCollected || 0,
+        progressPercentage || 0,
+        status || 'PLANNING',
+        targetHandoverDate || '2026-12-31',
+        startDate || new Date().toISOString().split('T')[0],
+        assignedWorkersCount || 10,
+        tasksCount || 15,
+        milestonesCount || 5
+      ]
+    );
+
+    await prisma.processAuditLog.create({
+      data: {
+        entityType: 'CIVIL_WORKS',
+        entityId: id,
+        action: 'PROJECT_CREATED',
+        actorName: 'Operations Director',
+        actorRole: 'ADMIN',
+        details: `Created commercial fit-out project "${name}" with budget ₱${Number(budget || 0).toLocaleString()}.`,
+      }
+    }).catch(() => {});
+
+    broadcastChange('projects');
+    broadcastChange('auditLogs');
+    res.json({ success: true, id });
+  } catch (error) {
+    console.error('Error creating project:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// PATCH /api/projects/:id
+app.patch('/api/projects/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      name,
+      clientName,
+      description,
+      location,
+      budget,
+      fundsCollected,
+      progressPercentage,
+      status,
+      targetHandoverDate,
+      startDate,
+      assignedWorkersCount,
+      tasksCount,
+      milestonesCount
+    } = req.body;
+
+    const updates: string[] = [];
+    const values: any[] = [];
+    let idx = 1;
+
+    if (name !== undefined) { updates.push(`name = $${idx++}`); values.push(name); }
+    if (clientName !== undefined) { updates.push(`client_name = $${idx++}`); values.push(clientName); }
+    if (description !== undefined) { updates.push(`description = $${idx++}`); values.push(description); }
+    if (location !== undefined) { updates.push(`location = $${idx++}`); values.push(location); }
+    if (budget !== undefined) { updates.push(`budget = $${idx++}`); values.push(budget); }
+    if (fundsCollected !== undefined) { updates.push(`funds_collected = $${idx++}`); values.push(fundsCollected); }
+    if (progressPercentage !== undefined) { updates.push(`progress_percentage = $${idx++}`); values.push(progressPercentage); }
+    if (status !== undefined) { updates.push(`status = $${idx++}`); values.push(status); }
+    if (targetHandoverDate !== undefined) { updates.push(`target_handover_date = $${idx++}`); values.push(targetHandoverDate || null); }
+    if (startDate !== undefined) { updates.push(`start_date = $${idx++}`); values.push(startDate || null); }
+    if (assignedWorkersCount !== undefined) { updates.push(`assigned_workers_count = $${idx++}`); values.push(assignedWorkersCount); }
+    if (tasksCount !== undefined) { updates.push(`tasks_count = $${idx++}`); values.push(tasksCount); }
+    if (milestonesCount !== undefined) { updates.push(`milestones_count = $${idx++}`); values.push(milestonesCount); }
+
+    if (updates.length > 0) {
+      values.push(id);
+      await pool.query(`UPDATE commercial_projects SET ${updates.join(', ')} WHERE id = $${idx}`, values);
+    }
+
+    broadcastChange('projects');
+    res.json({ success: true, id });
+  } catch (error) {
+    console.error('Error updating project:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// DELETE /api/projects/:id
+app.delete('/api/projects/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query('DELETE FROM commercial_projects WHERE id = $1', [id]);
+    broadcastChange('projects');
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error deleting project:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// ============================================================================
+// EXTENDED PAYROLL REST API
+// ============================================================================
+
+// GET /api/extended-payroll
+app.get('/api/extended-payroll', async (req, res) => {
+  try {
+    const dbRows = await pool.query('SELECT * FROM extended_payroll ORDER BY created_at DESC');
+    const records = (dbRows.rows || []).map(p => ({
+      id: p.id,
+      workerName: p.worker_name,
+      contractorCompany: p.contractor_company,
+      projectName: p.project_name,
+      role: p.role,
+      hoursWorked: Number(p.hours_worked || 0),
+      daysWorked: Number(p.days_worked || 0),
+      dailyRate: Number(p.daily_rate || 0),
+      overtimeHours: Number(p.overtime_hours || 0),
+      grossPay: Number(p.gross_pay || 0),
+      deductions: Number(p.deductions || 0),
+      netPay: Number(p.net_pay || 0),
+      status: p.status || 'Pending',
+      disbursementDate: p.disbursement_date ? p.disbursement_date.toISOString().split('T')[0] : null,
+      paymentMethod: p.payment_method || 'Bank Transfer'
+    }));
+    res.json(records);
+  } catch (error) {
+    console.error('Error fetching extended payroll:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// POST /api/extended-payroll
+app.post('/api/extended-payroll', async (req, res) => {
+  try {
+    const {
+      workerName,
+      contractorCompany,
+      projectName,
+      role,
+      hoursWorked,
+      daysWorked,
+      dailyRate,
+      overtimeHours,
+      grossPay,
+      deductions,
+      netPay,
+      status,
+      paymentMethod
+    } = req.body;
+
+    if (!workerName || !projectName) {
+      return res.status(400).json({ error: 'Worker name and project are required' });
+    }
+
+    const id = `PAY-${Date.now().toString().slice(-4)}`;
+    await pool.query(
+      `INSERT INTO extended_payroll 
+       (id, worker_name, contractor_company, project_name, role, hours_worked, days_worked, daily_rate, overtime_hours, gross_pay, deductions, net_pay, status, payment_method)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+      [
+        id,
+        workerName,
+        contractorCompany || 'Trade Crew',
+        projectName,
+        role || 'Artisan',
+        hoursWorked || 80,
+        daysWorked || 10,
+        dailyRate || 900,
+        overtimeHours || 0,
+        grossPay || 9000,
+        deductions || 500,
+        netPay || 8500,
+        status || 'Pending',
+        paymentMethod || 'Bank Transfer'
+      ]
+    );
+
+    broadcastChange('extendedPayroll');
+    res.json({ success: true, id });
+  } catch (error) {
+    console.error('Error creating extended payroll record:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// PATCH /api/extended-payroll/:id
+app.patch('/api/extended-payroll/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      workerName,
+      role,
+      dailyRate,
+      daysWorked,
+      overtimeHours,
+      grossPay,
+      deductions,
+      netPay,
+      status,
+      disbursementDate
+    } = req.body;
+
+    const updates: string[] = [];
+    const values: any[] = [];
+    let idx = 1;
+
+    if (workerName !== undefined) { updates.push(`worker_name = $${idx++}`); values.push(workerName); }
+    if (role !== undefined) { updates.push(`role = $${idx++}`); values.push(role); }
+    if (dailyRate !== undefined) { updates.push(`daily_rate = $${idx++}`); values.push(dailyRate); }
+    if (daysWorked !== undefined) { updates.push(`days_worked = $${idx++}`); values.push(daysWorked); }
+    if (overtimeHours !== undefined) { updates.push(`overtime_hours = $${idx++}`); values.push(overtimeHours); }
+    if (grossPay !== undefined) { updates.push(`gross_pay = $${idx++}`); values.push(grossPay); }
+    if (deductions !== undefined) { updates.push(`deductions = $${idx++}`); values.push(deductions); }
+    if (netPay !== undefined) { updates.push(`net_pay = $${idx++}`); values.push(netPay); }
+    if (status !== undefined) { updates.push(`status = $${idx++}`); values.push(status); }
+    if (disbursementDate !== undefined) { updates.push(`disbursement_date = $${idx++}`); values.push(disbursementDate || null); }
+
+    if (updates.length > 0) {
+      values.push(id);
+      await pool.query(`UPDATE extended_payroll SET ${updates.join(', ')} WHERE id = $${idx}`, values);
+    }
+
+    broadcastChange('extendedPayroll');
+    res.json({ success: true, id });
+  } catch (error) {
+    console.error('Error updating extended payroll record:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// DELETE /api/extended-payroll/:id
+app.delete('/api/extended-payroll/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query('DELETE FROM extended_payroll WHERE id = $1', [id]);
+    broadcastChange('extendedPayroll');
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error deleting extended payroll record:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+
+// Serve Vite build outputs (dist) ensuring http://localhost:3001 serves full production app
+const distPath = path.join(__dirname, 'dist');
+app.use(express.static(distPath));
+app.get('*', (req, res, next) => {
+  if (req.path.startsWith('/api') || req.path.startsWith('/events')) {
+    return next();
+  }
+  res.sendFile(path.join(distPath, 'index.html'));
+});
 
 app.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`Backend Server API is running on http://0.0.0.0:${PORT}`);

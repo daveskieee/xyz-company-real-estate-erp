@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev:client": "vite --port=3000 --host=0.0.0.0",
-    "dev:server": "tsx server.ts",
+    "dev:server": "tsx watch server.ts",
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
     "db:push": "prisma db push",
     "db:generate": "prisma generate",

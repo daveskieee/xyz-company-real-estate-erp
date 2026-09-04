@@ -154,11 +154,49 @@ export interface ProcessAuditLog {
   createdAt: string;
 }
 
+export type CTVillDepartment = 
+  | 'Executive Leadership'
+  | 'Design & Pre-Construction'
+  | 'Project Management & Construction'
+  | 'Property Management & Maintenance'
+  | 'Corporate Support';
+
+export type CTVillRole =
+  // Executive Leadership
+  | 'Board of Directors / President'
+  | 'Chief Executive Officer (CEO)'
+  | 'Chief Operating Officer (COO)'
+  // Design & Pre-Construction ("CREATE" Phase)
+  | 'Principal Architect'
+  | 'Design & Interior Architects'
+  | 'Lead Electrical & Mechanical Engineers'
+  | 'PEZA Permitting Specialists'
+  | 'Quantity Surveyors & Estimators'
+  // Project Management & Construction ("CONSTRUCT" Phase)
+  | 'Project Managers (PM)'
+  | 'Project & Site Engineers'
+  | 'Safety Officers (EHSO)'
+  | 'Site Foremen'
+  | 'Skilled Trade Crews (Electricians, Carpenters, Painters, Masons)'
+  // Property Management & Maintenance ("AFTER CARE" Phase)
+  | 'Aftercare Coordinators'
+  | 'Facilities Maintenance Technicians'
+  // Corporate Support
+  | 'Finance & Accounting Department'
+  | 'Human Resources & Admin Department'
+  | 'Procurement & Logistics Department';
+
 export interface Contractor {
   id: string;
   name: string;
   company: string;
-  specialty: 'Land Leveling' | 'Road Construction' | 'Manpower Supply' | 'Civil Engineering' | 'Land Leveling & Grading' | 'Road Paving & Curbs' | 'Civil Drainage & Utilities';
+  specialty?: string;
+  employmentType?: 'INTERNAL' | 'OUTSOURCED';
+  department?: CTVillDepartment | string;
+  roleTitle?: CTVillRole | string;
+  dailyRate?: number;
+  monthlySalary?: number;
+  status?: 'ACTIVE' | 'ON_LEAVE' | 'INACTIVE';
   contractAmount: number;
   paidAmount: number;
   activeManpower: number;
@@ -166,6 +204,7 @@ export interface Contractor {
   rating: number; // Rating out of 5
   contact?: string;
   activeProjectSite?: string;
+  createdAt?: string;
 }
 
 export interface PayrollRecord {
@@ -245,6 +284,10 @@ export interface UserSession {
   clientId?: string; // If role is 'Client'
   accountStatus?: 'INVITED' | 'ACTIVE' | 'SUSPENDED';
   token?: string;
+  avatarUrl?: string | null;
+  title?: string;
+  phone?: string;
+  division?: string;
 }
 
 // --- PROJECT MANAGEMENT SYSTEM (PMS) INTERFACES ---
@@ -295,11 +338,11 @@ export interface DailySiteLog {
 export interface ProjectDocument {
   id: string;
   title: string;
-  category: 'CAD_DRAWING' | 'PERMIT_DHSUD' | 'LGU_CLEARANCE' | 'STRUCTURAL_PLAN' | 'DEED_LEGAL' | 'OTHER';
+  category: 'CAD_DRAWING' | 'PERMIT_DHSUD' | 'LGU_CLEARANCE' | 'STRUCTURAL_PLAN' | 'DEED_LEGAL' | 'SPECIFICATIONS' | 'ARCHITECTURAL' | 'OTHER';
   fileUrl?: string;
   fileSize?: string;
   version: string;
-  status: 'APPROVED' | 'UNDER_REVIEW' | 'DRAFT' | 'ARCHIVED';
+  status: 'APPROVED' | 'UNDER_REVIEW' | 'IN_REVIEW' | 'DRAFT' | 'ARCHIVED';
   uploadedBy: string;
   notes?: string;
   createdAt?: string;
@@ -361,4 +404,88 @@ export interface CADParseResult {
   lots: CADParsedLot[];
   rawLines?: { start: SlotPoint; end: SlotPoint; layer?: string }[];
 }
+
+// --- CORE MODULE EXTENSIONS ---
+
+export type PermitType = 
+  | 'LGU_BUILDING_PERMIT' 
+  | 'BARANGAY_CLEARANCE' 
+  | 'PEZA_FITOUT_PERMIT' 
+  | 'FSIC_FIRE_SAFETY' 
+  | 'DOLE_CSHP' 
+  | 'OCCUPANCY_PERMIT' 
+  | 'SANITARY_CLEARANCE' 
+  | 'OTHER';
+
+export interface GovernmentPermit {
+  id: string;
+  projectId?: string;
+  projectName: string;
+  permitName: string;
+  permitType: PermitType;
+  issuingAgency: string;
+  referenceNo: string;
+  status: 'APPROVED' | 'PENDING' | 'UNDER_RENEWAL' | 'EXPIRED';
+  applicationDate?: string | null;
+  approvalDate?: string | null;
+  expiryDate?: string | null;
+  notes?: string;
+  documentUrl?: string;
+  createdAt?: string;
+}
+
+export type ScheduleEventType = 'MEETING' | 'DEADLINE' | 'MILESTONE' | 'INSPECTION';
+
+export interface ScheduleEvent {
+  id: string;
+  projectId?: string;
+  projectName?: string;
+  title: string;
+  eventType: ScheduleEventType;
+  eventDate: string;
+  startTime?: string;
+  endTime?: string;
+  location?: string;
+  attendees?: string;
+  notes?: string;
+  status?: 'SCHEDULED' | 'COMPLETED' | 'CANCELLED';
+  createdAt?: string;
+}
+
+export interface ProjectProfile {
+  id: string;
+  name: string;
+  clientName: string;
+  description: string;
+  location: string;
+  budget: number;
+  fundsCollected: number;
+  progressPercentage: number;
+  status: 'PLANNING' | 'IN_PROGRESS' | 'PUNCHLIST_QA' | 'HANDED_OVER' | 'COMPLETED';
+  targetHandoverDate: string;
+  startDate: string;
+  assignedWorkersCount: number;
+  assignedContractorIds: string[];
+  tasksCount: number;
+  milestonesCount: number;
+}
+
+export interface ExtendedPayrollItem {
+  id: string;
+  workerName: string;
+  contractorCompany: string;
+  projectName: string;
+  role: string;
+  hoursWorked: number;
+  daysWorked: number;
+  dailyRate: number;
+  overtimeHours?: number;
+  grossPay: number;
+  deductions: number;
+  netPay: number;
+  status: 'Pending' | 'Disbursed';
+  disbursementDate?: string;
+  paymentMethod: string;
+}
+
 
